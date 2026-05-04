@@ -1,3 +1,5 @@
+leapfrog-rs/target/
+
 .cpcache/
 .clj-kondo/.cache
 .lsp/
