@@ -56,10 +56,22 @@
       [network' [prop-id] out-id])))
 
 (def contextual-operator-key ::contextual-operator?)
+(def application-activate-key ::application-activate)
+(def output-selector-key ::output-selector)
 
 (defn contextual-operator?
   [operator]
   (true? (-> operator meta contextual-operator-key)))
+
+(defn application-activate
+  [operator]
+  (-> operator meta application-activate-key))
+
+(defn output-id
+  [operator arg-ids fallback-id]
+  (if-let [select-output (-> operator meta output-selector-key)]
+    (select-output arg-ids fallback-id)
+    fallback-id))
 
 (defn- unwrap-compiler-value
   [v]
@@ -70,20 +82,29 @@
 (defn primitive-operator
   "Compile-2-local primitive wrapper that waits for partial inputs."
   [f]
-  (fn [network arg-ids out-id]
-    (let [[prop-id network']
-          ((prop/construct-propagator
-            (fn [_inputs _outputs current-net]
-              (let [values (mapv #(unwrap-compiler-value
-                                    (net/network-cell-strongest current-net %))
-                                 arg-ids)]
-                (if (apply value/any-unusable-values? values)
-                  []
-                  [(message out-id (apply f values))])))
-            arg-ids
-            [out-id])
-           network)]
-      [network' [prop-id] out-id])))
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[prop-id network']
+            ((prop/construct-propagator
+              (fn [_inputs _outputs current-net]
+                (let [values (mapv #(unwrap-compiler-value
+                                      (net/network-cell-strongest current-net %))
+                                   arg-ids)]
+                  (if (apply value/any-unusable-values? values)
+                    []
+                    [(message out-id (apply f values))])))
+              arg-ids
+              [out-id])
+             network)]
+        [network' [prop-id] out-id]))
+    {application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (let [values (mapv #(unwrap-compiler-value
+                             (net/network-cell-strongest current-net %))
+                          arg-ids)]
+         (if (apply value/any-unusable-values? values)
+           []
+           [(message out-id (apply f values))])))}))
 
 (defn- dependency-sources
   [v]
@@ -133,16 +154,56 @@
               [out-id])
              network)]
         [network' [prop-id] out-id]))
-    {contextual-operator-key true}))
+    {contextual-operator-key true
+     application-activate-key
+     (fn [current-net context-id arg-ids out-id]
+       (let [context-value (net/network-cell-strongest current-net
+                                                       context-id)
+             arg-values (mapv #(net/network-cell-strongest current-net %)
+                              arg-ids)
+             bases (mapv unwrap-compiler-value arg-values)
+             unusable-input? (or (value/unusable? context-value)
+                                 (apply value/any-unusable-values?
+                                        bases))
+             base-result (if unusable-input?
+                           value/nothing
+                           (apply f bases))]
+         (if (or unusable-input?
+                 (value/unusable? base-result))
+           []
+           [(message out-id
+                     (dependency/dependency-value
+                      base-result
+                      (conj (apply set/union
+                                   (map dependency-sources
+                                        arg-values))
+                            (context/dependency-source
+                             context-value))))])))}))
 
 (defn- bi-sync-operator []
-  (fn [network arg-ids _out-id]
-    (let [[a b] (vec arg-ids)]
-      (when-not (and a b (= 2 (count arg-ids)))
-        (throw (ex-info "<-> expects exactly two arguments" {:arg-ids arg-ids})))
-      (let [[a->b network'] ((stdlib-prop/id a b) network)
-            [b->a network''] ((stdlib-prop/id b a) network')]
-        [network'' [a->b b->a] b]))))
+  (with-meta
+    (fn [network arg-ids _out-id]
+      (let [[a b] (vec arg-ids)]
+        (when-not (and a b (= 2 (count arg-ids)))
+          (throw (ex-info "<-> expects exactly two arguments" {:arg-ids arg-ids})))
+        (let [[a->b network'] ((stdlib-prop/id a b) network)
+              [b->a network''] ((stdlib-prop/id b a) network')]
+          [network'' [a->b b->a] b])))
+    {output-selector-key
+     (fn [arg-ids fallback-id]
+       (let [[_ b] (vec arg-ids)]
+         (or b fallback-id)))
+     application-activate-key
+     (fn [current-net _context-id arg-ids _out-id]
+       (let [[a b] (vec arg-ids)]
+         (when-not (and a b (= 2 (count arg-ids)))
+           (throw (ex-info "<-> expects exactly two arguments"
+                           {:arg-ids arg-ids})))
+         (let [a-value (net/network-cell-strongest current-net a)
+               b-value (net/network-cell-strongest current-net b)]
+           (cond-> []
+             (not (value/unusable? a-value)) (conj (message b a-value))
+             (not (value/unusable? b-value)) (conj (message a b-value))))))}))
 
 (defn- operator-env
   [operator-builder]

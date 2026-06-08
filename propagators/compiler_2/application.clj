@@ -10,8 +10,10 @@
             [propagators.cells.diff :refer [diff-internal-output-cells]]
             [propagators.cells.snapshot :refer [pop-inputs]]
             [propagators.cells.value :as value]
+            [propagators.compiler-2.application-value :as application-value]
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.env :as env]
+            [propagators.compiler-2.helpers :as h]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.helpers.task-queue :as tq]
@@ -21,6 +23,7 @@
             [propagators.propagator :as prop]))
 
 (def apply-closure-props-key :compiler-2/apply-closure-props)
+(def apply-application-props-key :compiler-2/apply-application-props)
 
 (defn- strongest-or-nothing
   [n id]
@@ -226,5 +229,65 @@
         [prop-id
          (net/update-net-dict-entry n
                                     apply-closure-props-key
+                                    (fnil conj #{})
+                                    prop-id)]))))
+
+(defn- primitive-application-messages
+  [operator context-id arg-ids out-id network]
+  (if-let [activate (h/application-activate operator)]
+    (activate network context-id arg-ids out-id)
+    []))
+
+(defn- application-messages
+  [application-id operator-id args-id scheduled-arg-ids context-id out-id network]
+  (let [application-info (strongest-or-nothing network application-id)
+        operator (strongest-or-nothing network operator-id)]
+    (cond
+      (value/unusable? application-info)
+      []
+
+      (not (application-value/application-info? application-info))
+      []
+
+      (value/unusable? operator)
+      []
+
+      (h/application-activate operator)
+      (primitive-application-messages operator
+                                      context-id
+                                      scheduled-arg-ids
+                                      out-id
+                                      network)
+
+      :else
+      (closure-application-messages operator-id
+                                    args-id
+                                    scheduled-arg-ids
+                                    out-id
+                                    network))))
+
+(defn p:apply-application
+  "Evaluate one retained compiler-2 application object.
+
+  The application object is declaration data. This propagator owns executable
+  lowering at evaluation time: primitive operators produce messages directly,
+  and closure values delegate to the closure application path."
+  [application-id operator-id args-id arg-ids context-id out-id]
+  (let [arg-ids (vec arg-ids)
+        activate (fn [_inputs _outputs network]
+                   (application-messages application-id
+                                         operator-id
+                                         args-id
+                                         arg-ids
+                                         context-id
+                                         out-id
+                                         network))
+        inputs (into [application-id operator-id args-id context-id] arg-ids)]
+    (fn [network]
+      (let [[prop-id n] ((prop/construct-propagator activate inputs [out-id])
+                         network)]
+        [prop-id
+         (net/update-net-dict-entry n
+                                    apply-application-props-key
                                     (fnil conj #{})
                                     prop-id)]))))

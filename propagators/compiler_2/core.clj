@@ -7,6 +7,7 @@
   "
   (:require [propagators.cells.value :as value]
             [propagators.compiler-2.application :as compiler-app]
+            [propagators.compiler-2.application-value :as application-value]
             [propagators.compiler-2.ast :as ast]
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.context :as context]
@@ -21,6 +22,7 @@
 
 (def compiler-result-key :compiler/result)
 (def compiler-props-key :compiler/props)
+(def compiler-applications-key :compiler/applications)
 
 (declare g:compile)
 
@@ -60,6 +62,49 @@
 (defn- result-cell [state]
   (h/new-cell state :result))
 
+(defn- install-argument-object
+  [state arg-ids]
+  (h/new-cell state :args (obj/compound-object (vec arg-ids))))
+
+(defn- install-operator-object
+  [state operator]
+  (h/new-cell state :operator-value operator))
+
+(defn- record-application-ir
+  [state app-id operator-ast operator-id result-id context-id]
+  (let [application-object
+        (application-value/application-object
+         {:operator-ast operator-ast
+          :operator-cell operator-id
+          :args-id (:application/args-id state)
+          :arg-ids (:application/arg-ids state)
+          :output-id result-id
+          :context-id context-id
+          :lowering (:application/lowering state)})]
+    (-> state
+        (assoc :net (h/seed-cell (:net state) app-id application-object))
+        (update :applications conj app-id))))
+
+(defn- install-application-propagator
+  [state app-id operator-ast operator-id result-id context-id]
+  (let [state' (record-application-ir state
+                                      app-id
+                                      operator-ast
+                                      operator-id
+                                      result-id
+                                      context-id)
+        [prop-id network']
+        ((compiler-app/p:apply-application app-id
+                                           operator-id
+                                           (:application/args-id state')
+                                           (:application/arg-ids state')
+                                           context-id
+                                           result-id)
+         (:net state'))]
+    (-> state'
+        (assoc :net network')
+        (h/add-props [prop-id]))))
+
 (defmulti g:advance
   (fn [_binding _state] :default))
 
@@ -76,45 +121,55 @@
 
 (defmethod g:apply :primitive
   [operator-binding operand-forms _calling-env state out-id]
-  (let [[state' arg-bindings] (compile-args state operand-forms)
-        arg-ids (mapv env/binding-id arg-bindings)]
-    (when-not (every? some? arg-ids)
-      (throw (ex-info "application arguments must compile to cells"
-                      {:args arg-bindings})))
-    (let [[network' prop-ids result-id]
-          (if (h/contextual-operator? operator-binding)
-            (operator-binding (:net state')
-                              (:context-id state')
-                              arg-ids
-                              out-id)
-            (operator-binding (:net state') arg-ids out-id))]
-      [(-> state'
-           (assoc :net network')
-           (h/add-props prop-ids))
-       (env/cell-binding result-id)])))
-
-(defn- install-argument-object
-  [state arg-ids]
-  (h/new-cell state :args (obj/compound-object (vec arg-ids))))
-
-(defmethod g:apply :cell
-  [operator-binding operand-forms _calling-env state out-id]
-  (let [[state' arg-bindings] (compile-args state operand-forms)
+  (let [app-id (:application/app-id state)
+        operator-ast (:application/operator-ast state)
+        context-id (:context-id state)
+        [state' arg-bindings] (compile-args state operand-forms)
         arg-ids (mapv env/binding-id arg-bindings)]
     (when-not (every? some? arg-ids)
       (throw (ex-info "application arguments must compile to cells"
                       {:args arg-bindings})))
     (let [[state'' args-binding] (install-argument-object state' arg-ids)
           args-id (env/binding-id args-binding)
-          [prop-id network']
-          ((compiler-app/p:apply-closure (env/binding-id operator-binding)
-                                         args-id
-                                         arg-ids
-                                         out-id)
-           (:net state''))]
+          [state''' operator-binding'] (install-operator-object state''
+                                                                operator-binding)
+          operator-id (env/binding-id operator-binding')
+          result-id (h/output-id operator-binding arg-ids out-id)]
+      [(-> state'''
+           (assoc :application/args-id args-id
+                  :application/arg-ids arg-ids
+                  :application/lowering :primitive)
+           (install-application-propagator
+            app-id
+            operator-ast
+            operator-id
+            result-id
+            context-id))
+       (env/cell-binding result-id)])))
+
+(defmethod g:apply :cell
+  [operator-binding operand-forms _calling-env state out-id]
+  (let [app-id (:application/app-id state)
+        operator-ast (:application/operator-ast state)
+        context-id (:context-id state)
+        [state' arg-bindings] (compile-args state operand-forms)
+        arg-ids (mapv env/binding-id arg-bindings)]
+    (when-not (every? some? arg-ids)
+      (throw (ex-info "application arguments must compile to cells"
+                      {:args arg-bindings})))
+    (let [[state'' args-binding] (install-argument-object state' arg-ids)
+          args-id (env/binding-id args-binding)
+          operator-id (env/binding-id operator-binding)]
       [(-> state''
-           (assoc :net network')
-           (h/add-props [prop-id]))
+           (assoc :application/args-id args-id
+                  :application/arg-ids arg-ids
+                  :application/lowering :closure-cell)
+           (install-application-propagator
+            app-id
+            operator-ast
+            operator-id
+            out-id
+            context-id))
        (env/cell-binding out-id)])))
 
 (defmethod g:apply :unsupported
@@ -132,18 +187,25 @@
         operator-binding (g:advance op-binding state')
         [state'' out-binding] (result-cell state')
         out-id (env/binding-id out-binding)
-        app-id (h/node-id state'' :application)
+        app-id (h/stable-node-id (:seed state'')
+                                 (:path state'')
+                                 :application
+                                 out-id)
+        operator-ast (ast/ast-map op)
         [state''' context-binding]
         (h/new-cell state''
                     :context
                     (context/context-value (:env state'')
                                            app-id
-                                           (ast/ast-map op)))
+                                           operator-ast))
         context-id (env/binding-id context-binding)]
     (g:apply operator-binding
              args
              (:env state''')
-             (assoc state''' :context-id context-id)
+             (assoc state'''
+                    :context-id context-id
+                    :application/app-id app-id
+                    :application/operator-ast operator-ast)
              out-id)))
 
 (defn- compile-let-cell [state names body]
@@ -230,11 +292,13 @@
   (let [m (ast/ast-map expr)]
     (compile-application state (:ast/operator m) (:ast/args m))))
 
-(defn- annotated-net [network result props env]
+(defn- annotated-net [network result props env applications]
   (-> network
       (net/assoc-net-dict-entry compiler-result-key (env/binding-id result))
       (net/assoc-net-dict-entry compiler-props-key (vec props))
-      (net/assoc-net-dict-entry :compiler/env env)))
+      (net/assoc-net-dict-entry :compiler/env env)
+      (net/assoc-net-dict-entry compiler-applications-key
+                                (vec applications))))
 
 (defn compile-expr
   "Compile AST data into a network value and result cell."
@@ -249,13 +313,19 @@
                                     :env env
                                     :seed seed
                                     :path path
-                                    :props []})
-         network (annotated-net (:net state) result (:props state) (:env state))]
+                                    :props []
+                                    :applications []})
+         network (annotated-net (:net state)
+                                result
+                                (:props state)
+                                (:env state)
+                                (:applications state))]
      {:net network
       :cell (env/binding-id result)
       :binding result
       :env (:env state)
-      :props (:props state)})))
+      :props (:props state)
+      :applications (:applications state)})))
 
 (defn compile-source
   "Parse and compile one compiler-2 source string."
@@ -271,6 +341,9 @@
 
 (defn compiled-props [compiled-net]
   (net/network-dict-entry compiled-net compiler-props-key))
+
+(defn compiled-applications [compiled-net]
+  (net/network-dict-entry compiled-net compiler-applications-key))
 
 (defn p:compile-expr
   "Compile source/env cells into a compiled network cell."
