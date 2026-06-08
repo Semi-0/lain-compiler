@@ -1,7 +1,6 @@
 (ns propagators.compiler-2.main
   "Meander-based compiler core for compile-2."
-  (:require [clojure.set :as set]
-            [meander.epsilon :as m]
+  (:require [meander.epsilon :as m]
             [propagators.boundary :as boundary]
             [propagators.cells.diff :refer [diff-internal-output-cells]]
             [propagators.cells.value :as value]
@@ -9,68 +8,24 @@
             [propagators.compiler-2.ast :as ast]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
+            [propagators.datastructures.compound-object :as obj]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
+            [propagators.network-builder :as nb]
             [propagators.propagator :as prop]
             [propagators.stdlib.prop :as stdlib-prop]))
 
 (def compiler-result-key :compiler/result)
 (def compiler-props-key :compiler/props)
+(def closure-runtime-slot :closure/runtime)
+(def closure-env-slot :closure/env)
+(def closure-body-slot :closure/body)
+(def closure-inputs-slot :closure/inputs)
+(def closure-output-slot :closure/output)
+(def closure-scope-slot :closure/scope)
 
 (declare compile-node)
-
-(declare free-symbols)
-
-(defn- free-symbol-set
-  [& xs]
-  (apply set/union #{} xs))
-
-(defn- free-symbols-seq [forms]
-  (apply free-symbol-set (map free-symbols forms)))
-
-(defn- free-symbols
-  [expr]
-  (m/match (ast/ast-map expr)
-    {:ast/type :literal}
-    #{}
-
-    {:ast/type :symbol :ast/name ?s}
-    #{?s}
-
-    {:ast/type :apply
-     :ast/operator ?op
-     :ast/args ?args
-     :ast/output ?out}
-    (free-symbol-set (free-symbols ?op)
-                     (free-symbols-seq ?args)
-                     (free-symbols ?out))
-
-    {:ast/type :apply
-     :ast/operator ?op
-     :ast/args ?args}
-    (free-symbol-set (free-symbols ?op)
-                     (free-symbols-seq ?args))
-
-    {:ast/type :do :ast/body ?body}
-    (free-symbols-seq ?body)
-
-    {:ast/type :let-cell :ast/names ?names :ast/body ?body}
-    (set/difference (free-symbols ?body) (set ?names))
-
-    {:ast/type :compound
-     :ast/inputs ?inputs
-     :ast/output ?output
-     :ast/body ?body}
-    (set/difference (free-symbols ?body)
-                    (set (conj (vec ?inputs) ?output)))
-
-    {:ast/type :let-compound
-     :ast/name ?name
-     :ast/value ?value
-     :ast/body ?body}
-    (free-symbol-set (free-symbols ?value)
-                     (disj (free-symbols ?body) ?name))))
 
 (defn- with-path [state path]
   (assoc state :path path))
@@ -112,15 +67,108 @@
      [state []]
      (map-indexed vector args))))
 
+(defn- copy-outer-cell
+  [n outer-net id]
+  (cond
+    (contains? (net/net-env n) id)
+    n
+
+    (contains? (net/net-env outer-net) id)
+    (nb/install-cell n
+                     id
+                     (net/network-cell-content outer-net id)
+                     (net/network-cell-strongest outer-net id))
+
+    :else
+    (nb/ensure-cell n id)))
+
+(defn- install-declared-slot
+  [n collection-id [slot-key parent->declaration]]
+  (reduce
+   (fn [[acc prop-ids] parent-id]
+     (let [[prop-id acc'] ((obj/p:slot slot-key parent-id collection-id) acc)]
+       [acc' (conj prop-ids prop-id)]))
+   [n []]
+   (sort-by pr-str (keys parent->declaration))))
+
+(defn- materialize-slot-object
+  [outer-net collection-id]
+  (let [declarations (obj/slot-declarations-for outer-net collection-id)
+        parent-ids (->> declarations vals (mapcat keys) (sort-by pr-str) vec)
+        n0 (copy-outer-cell net/empty-net outer-net collection-id)
+        n1 (reduce #(copy-outer-cell %1 outer-net %2) n0 parent-ids)
+        [slot-net prop-ids]
+        (reduce
+         (fn [[acc prop-ids] declaration]
+           (let [[acc' prop-ids'] (install-declared-slot acc
+                                                         collection-id
+                                                         declaration)]
+             [acc' (into prop-ids prop-ids')]))
+         [n1 []]
+         (sort-by (comp pr-str key) declarations))
+        materialized (nb/run-propagators slot-net prop-ids)]
+    (net/network-cell-strongest materialized collection-id)))
+
+(defn- compiler-closure-runtime
+  [closure-value]
+  (if (closure/closure? closure-value)
+    closure-value
+    (obj/slot-value closure-value closure-runtime-slot)))
+
+(defn- compiler-closure-env
+  [closure-value]
+  (obj/slot-value closure-value closure-env-slot))
+
+(defn- compiler-closure-object
+  [runtime lexical-env body inputs output scope]
+  (obj/compound-object {closure-runtime-slot runtime
+                        closure-env-slot lexical-env
+                        closure-body-slot body
+                        closure-inputs-slot (vec inputs)
+                        closure-output-slot output
+                        closure-scope-slot scope}))
+
+(defn- object-slot-map [v]
+  (into {}
+        (map (fn [slot-key] [slot-key (obj/slot-value v slot-key)]))
+        (obj/public-slot-keys v)))
+
+(defn- inner->outer-boundary-map [network]
+  (into {}
+        (map (fn [[outer inner]] [inner outer]))
+        (merge (get (net/net-dict-or-empty network) :avatars-in {})
+               (get (net/net-dict-or-empty network) :avatars-out {}))))
+
+(defn- externalize-closure-value [v network]
+  (let [closure-env (compiler-closure-env v)]
+    (if (value/unusable? closure-env)
+      v
+      (obj/compound-object
+       (assoc (object-slot-map v)
+              closure-env-slot
+              (env/externalize-env closure-env
+                                   (inner->outer-boundary-map network)))))))
+
+(defn- externalize-output-value [v network]
+  (if (and (not (value/unusable? v))
+           (some? (compiler-closure-runtime v))
+           (some? (compiler-closure-env v)))
+    (externalize-closure-value v network)
+    v))
+
 (defn- ordered-closure-messages
   [closure-id ordered-input-ids output-ids network]
   (let [closure-cv (net/network-cell-strongest network closure-id)
-        closure-payload (value/value-payload closure-cv)
+        materialized-closure (when-not (value/unusable? closure-cv)
+                               (materialize-slot-object network closure-id))
+        closure-payload (compiler-closure-runtime materialized-closure)
+        lexical-env (compiler-closure-env materialized-closure)
         input-values (mapv #(net/network-cell-strongest network %)
                            ordered-input-ids)]
     (if (or (value/unusable? closure-cv)
             (value/any-unusable-values? input-values)
-            (nil? closure-payload))
+            (nil? closure-payload)
+            (value/unusable? lexical-env))
       []
       (-> network
           (closure/create-boundary-outputs output-ids)
@@ -130,7 +178,9 @@
                   inner-outputs (mapv (partial net/lookup-inner-out %)
                                       output-ids)]
               ((closure/closure-f closure-payload)
-               (closure/closure-net closure-payload)
+               (net/assoc-net-dict-entry (closure/closure-net closure-payload)
+                                         closure-env-slot
+                                         lexical-env)
                inner-inputs
                inner-outputs
                %)))
@@ -149,17 +199,6 @@
          network)]
     [network' [prop-id] out-id]))
 
-(defn- apply-deferred-closure [network closure-id arg-ids out-id]
-  (apply-closure-ordered network closure-id arg-ids out-id))
-
-(defn- apply-compound-binding [network binding arg-ids out-id]
-  (apply-closure-ordered network
-                         (:binding/id binding)
-                         (concat (mapcat env/boundary-ids
-                                         (:binding/captures binding))
-                                 arg-ids)
-                         out-id))
-
 (defn- compile-application [state op args maybe-output]
   (let [base-path (:path state)
         [state' op-value] (compile-node (h/child state :operator) op)
@@ -176,11 +215,11 @@
             (fn? op-value)
             (op-value (:net state''') arg-ids out-id)
 
-            (env/compound-binding? op-value)
-            (apply-compound-binding (:net state''') op-value arg-ids out-id)
-
             (env/binding-id op-value)
-            (apply-deferred-closure (:net state''') (env/binding-id op-value) arg-ids out-id)
+            (apply-closure-ordered (:net state''')
+                                   (env/binding-id op-value)
+                                   arg-ids
+                                   out-id)
 
             :else
             (throw (ex-info "application operator is not callable"
@@ -209,47 +248,67 @@
                   body)))
 
 (defn- compile-compound [state inputs output body]
-  (let [locals (conj (vec inputs) output)
-        body-free-symbols (free-symbols body)
-        captures (->> (env/captures (:env state) locals)
-                      (filter #(contains? body-free-symbols (:symbol %)))
-                      vec)
-        capture-bindings (mapv :value captures)
-        capture-ids (mapcat :ids captures)
-        lexical-env (:env state)
+  (let [lexical-env (:env state)
         seed (:seed state)
         path (:path state)
-        closure-value
+        lexical-scope (env/scope-id lexical-env)
+        runtime-closure
         (closure/closure
-         (fn [_closure-net input-ids output-ids network]
+         (fn [closure-net input-ids output-ids network]
            (let [input-ids (vec input-ids)
-                 capture-count (count capture-ids)
-                 capture-inner (subvec input-ids 0 capture-count)
-                 arg-inner (subvec input-ids capture-count)
+                 arg-inner input-ids
                  [out-inner] output-ids
-                 captured-env (env/rebind-captures
-                               (env/sub-env lexical-env)
-                               captures
-                               capture-inner)
+                 lexical-env (or (net/network-dict-entry closure-net closure-env-slot)
+                                 lexical-env)
                  body-env
                  (reduce
                   (fn [scoped-env [sym id]]
                     (env/bind-local scoped-env sym (env/cell-binding id)))
-                  (env/bind-local captured-env output (env/cell-binding out-inner))
-                  (map vector inputs arg-inner))
+                  (env/bind-local (env/sub-env lexical-env)
+                                  output
+                                  (env/cell-binding out-inner))
+                 (map vector inputs arg-inner))
                  [state' result] (compile-node {:net network
                                                 :env body-env
                                                 :seed [seed path :closure]
                                                 :path []
                                                 :props []}
                                                body)
+                 body-net (nb/run-propagators (:net state') (:props state'))
                  result-id (env/binding-id result)]
              (if (and result-id (not= result-id out-inner))
-               (second ((stdlib-prop/id result-id out-inner) (:net state')))
-               (:net state'))))
+               (let [result-value (net/network-cell-strongest body-net result-id)
+                     n0 (if (value/unusable? result-value)
+                          body-net
+                          (nb/seed-cell body-net
+                                        result-id
+                                        (externalize-output-value result-value network)))
+                     [result-prop n'] ((stdlib-prop/id result-id out-inner)
+                                       n0)]
+                 (nb/run-propagators n' [result-prop]))
+               body-net)))
          net/empty-net)
-        [state' closure-binding] (h/new-cell state :closure closure-value)]
-    [state' (env/compound-binding (:binding/id closure-binding) capture-bindings)]))
+        closure-object (compiler-closure-object runtime-closure
+                                                lexical-env
+                                                body
+                                                inputs
+                                                output
+                                                lexical-scope)
+        [state-with-env lexical-env-binding] (h/new-cell state
+                                                         :closure-env
+                                                         lexical-env)
+        lexical-env-id (env/binding-id lexical-env-binding)
+        [state-with-closure closure-binding] (h/new-cell state-with-env
+                                                         :closure
+                                                         closure-object)
+        closure-id (env/binding-id closure-binding)
+        [env-slot-prop n']
+        ((obj/p:slot closure-env-slot lexical-env-id closure-id)
+         (:net state-with-closure))]
+    [(-> state-with-closure
+         (assoc :net n')
+         (h/add-props [env-slot-prop]))
+     (env/compound-binding closure-id)]))
 
 (defn- compile-node [state expr]
   (m/match (ast/ast-map expr)

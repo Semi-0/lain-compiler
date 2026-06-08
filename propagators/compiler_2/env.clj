@@ -2,28 +2,33 @@
   "Compound-object lexical environments for compile-2.
 
   A child environment is a new compound object that receives the parent's public
-  slots one-way. Local bindings are written at the child scope intensity, so
+  slots one-way. Local bindings are written as scope-source candidates, so
   strongest-value selection handles shadowing without syncing child writes back
   into the parent scope.
   "
   (:require [propagators.cells.value :as value]
             [propagators.compiler-2.ast :as ast]
             [propagators.datastructures.compound-object :as obj]
-            [propagators.datastructures.intensity :as intensity]
+            [propagators.datastructures.scope-source :as scope-source]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.propagator :as prop]))
 
 (def env-depth-key :env/depth)
+(def env-scope-key :env/scope)
+(def env-scope-chain-key :env/scope-chain)
+(def env-internal-keys #{env-depth-key env-scope-key env-scope-chain-key})
 
 (defn cell-binding [id] {:binding/type :cell :binding/id id})
 (defn cell-binding? [x] (= :cell (:binding/type x)))
 
-(defn compound-binding [closure-id capture-bindings]
-  {:binding/type :compound
-   :binding/id closure-id
-   :binding/captures (vec capture-bindings)})
+(defn compound-binding
+  ([closure-id]
+   {:binding/type :compound
+    :binding/id closure-id})
+  ([closure-id _capture-bindings]
+   (compound-binding closure-id)))
 
 (defn compound-binding? [x] (= :compound (:binding/type x)))
 
@@ -37,8 +42,30 @@
   (let [depth (obj/slot-value env env-depth-key)]
     (if (number? depth) depth 0)))
 
+(defn scope-id [env]
+  (or (obj/slot-value env env-scope-key)
+      ::root))
+
+(defn scope-chain [env]
+  (let [chain (obj/slot-value env env-scope-chain-key)]
+    (if (vector? chain)
+      chain
+      [::root])))
+
+(defn set-scope [env scope chain]
+  (obj/compound-object
+   (assoc (object->map env)
+          env-scope-key scope
+          env-scope-chain-key (vec chain)
+          env-depth-key (max 0 (dec (count chain))))))
+
 (defn set-depth [env depth]
-  (obj/compound-object (assoc (object->map env) env-depth-key depth)))
+  (let [root (scope-id env)
+        chain (if (zero? depth)
+                [root]
+                (vec (concat [root]
+                             (repeatedly depth ids/new-node-id))))]
+    (set-scope env (last chain) chain)))
 
 (defn sub-env
   "Create a child env by one-way receiving parent slots.
@@ -47,19 +74,44 @@
   writes happen only in that child object at the incremented depth.
   "
   [parent-env]
-  (-> parent-env
-      object->map
-      obj/compound-object
-      (set-depth (inc (depth parent-env)))))
+  (let [child-scope [:env/child (scope-id parent-env)]
+        child-chain (conj (scope-chain parent-env) child-scope)
+        parent-map (object->map parent-env)
+        retargeted
+        (reduce-kv
+         (fn [acc k v]
+           (if (and (not (contains? env-internal-keys k))
+                    (scope-source/scope-content? v))
+             (assoc acc
+                    k
+                    (let [strongest (scope-source/strongest-value v)]
+                      (if (scope-source/scope-value? strongest)
+                        (scope-source/retarget strongest child-scope child-chain)
+                        v)))
+             acc))
+         parent-map
+         parent-map)]
+    (set-scope (obj/compound-object retargeted)
+               child-scope
+               child-chain)))
 
 (def enter-scope sub-env)
 
+(defn- source-for-depth [env binding-depth]
+  (let [chain (scope-chain env)]
+    (or (nth chain binding-depth nil)
+        (scope-id env))))
+
 (defn bind-at
-  "Write one binding at an explicit intensity."
+  "Write one binding at an explicit lexical source depth."
   [env sym binding binding-depth]
-  (let [candidate (intensity/intensity-value binding-depth binding)
+  (let [source (source-for-depth env binding-depth)
+        candidate (scope-source/scope-value source
+                                            (scope-id env)
+                                            (scope-chain env)
+                                            binding)
         old (when (slot-present? env sym) (obj/slot-value env sym))
-        merged (if old (intensity/merge-content old candidate) candidate)]
+        merged (if old (scope-source/merge-content old candidate) candidate)]
     (obj/compound-object (assoc (object->map env) sym merged))))
 
 (defn bind
@@ -69,10 +121,7 @@
    (bind-at env sym binding binding-depth)))
 
 (defn bind-local [env sym binding]
-  (obj/compound-object
-   (assoc (object->map env)
-          sym
-          (intensity/intensity-value (depth env) binding))))
+  (bind-at env sym binding (depth env)))
 
 (defn bind-locals [env sym->binding]
   (reduce-kv bind-local env sym->binding))
@@ -80,15 +129,17 @@
 (defn lookup-entry [env sym]
   (when (slot-present? env sym)
     (let [slot (obj/slot-value env sym)
-          strongest (if (intensity/intensity-content? slot)
-                      (intensity/strongest-value slot)
+          strongest (if (scope-source/scope-content? slot)
+                      (scope-source/strongest-value slot)
                       slot)]
       (when-not (value/unusable? strongest)
-        (if (intensity/intensity-value? strongest)
-          {:value (intensity/base-value strongest)
-           :intensity (intensity/intensity strongest)}
+        (if (scope-source/scope-value? strongest)
+          {:value (scope-source/base-value strongest)
+           :scope/source (scope-source/source-scope strongest)
+           :scope/closure (scope-source/closure-scope strongest)
+           :scope/chain (scope-source/context-chain strongest)}
           {:value strongest
-           :intensity nil})))))
+           :scope/source nil})))))
 
 (defn lookup [env sym]
   (:value (lookup-entry env sym)))
@@ -104,56 +155,49 @@
   (cond
     (ids/node-id? x) [x]
     (cell-binding? x) [(:binding/id x)]
-    (compound-binding? x) (into [(:binding/id x)]
-                                (mapcat boundary-ids (:binding/captures x)))
+    (compound-binding? x) [(:binding/id x)]
     :else []))
 
 (defn rebind-boundary [binding inner-ids]
   (cond
     (ids/node-id? binding) (cell-binding (first inner-ids))
     (cell-binding? binding) (cell-binding (first inner-ids))
-    (compound-binding? binding)
-    (compound-binding (first inner-ids)
-                      (second
-                       (reduce
-                        (fn [[remaining acc] captured]
-                          (let [n (count (boundary-ids captured))]
-                            [(subvec remaining n)
-                             (conj acc
-                                   (rebind-boundary captured
-                                                    (subvec remaining 0 n)))]))
-                        [(vec (rest inner-ids)) []]
-                        (:binding/captures binding))))
+    (compound-binding? binding) (compound-binding (first inner-ids))
     :else binding))
 
-(defn captures
-  "Cellful parent bindings that must be passed as closure hidden inputs."
-  [env local-symbols]
-  (->> (obj/public-slot-keys env)
-       (remove #{env-depth-key})
-       (remove (set local-symbols))
-       (keep (fn [sym]
-               (when-let [{:keys [value intensity]} (lookup-entry env sym)]
-                 (let [ids (boundary-ids value)]
-                   (when (seq ids)
-                     {:symbol sym
-                      :value value
-                      :intensity (or intensity 0)
-                      :ids ids})))))
-       vec))
+(defn rebind-boundary-map [binding inner->outer]
+  (cond
+    (ids/node-id? binding) (or (get inner->outer binding) binding)
+    (cell-binding? binding) (cell-binding (or (get inner->outer (:binding/id binding))
+                                              (:binding/id binding)))
+    (compound-binding? binding) (compound-binding (or (get inner->outer (:binding/id binding))
+                                                      (:binding/id binding)))
+    :else binding))
 
-(defn rebind-captures
-  "Bind hidden input avatars into a child env at the child scope intensity."
-  [child-env captures inner-ids]
-  (first
-   (reduce
-    (fn [[env remaining] {:keys [symbol value ids]}]
-      (let [n (count ids)
-            current (subvec remaining 0 n)]
-        [(bind-local env symbol (rebind-boundary value current))
-         (subvec remaining n)]))
-    [child-env (vec inner-ids)]
-    captures)))
+(defn- externalize-scope-content [content inner->outer]
+  (cond
+    (scope-source/scope-value? content)
+    (scope-source/map-base content #(rebind-boundary-map % inner->outer))
+
+    (scope-source/scope-content? content)
+    (mapv #(scope-source/map-base % (fn [base]
+                                      (rebind-boundary-map base inner->outer)))
+          (scope-source/content-candidates content))
+
+    :else
+    (rebind-boundary-map content inner->outer)))
+
+(defn externalize-env [env inner->outer]
+  (obj/compound-object
+   (reduce-kv
+    (fn [acc k v]
+      (assoc acc
+             k
+             (if (contains? env-internal-keys k)
+               v
+               (externalize-scope-content v inner->outer))))
+    {}
+    (object->map env))))
 
 (defn p:sub-env
   "One-way parent -> child scope environment expansion."

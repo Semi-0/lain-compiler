@@ -5,6 +5,7 @@
             [propagators.cells.value :as value]
             [propagators.compiler-2.env :as env]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.scope-source :as scope-source]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
@@ -58,7 +59,8 @@
     (let [[prop-id network']
           ((prop/construct-propagator
             (fn [_inputs _outputs current-net]
-              (let [values (mapv #(net/network-cell-strongest current-net %)
+              (let [values (mapv #(scope-source/unwrap
+                                    (net/network-cell-strongest current-net %))
                                  arg-ids)]
                 (if (apply value/any-unusable-values? values)
                   []
