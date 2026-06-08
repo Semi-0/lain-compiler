@@ -2,9 +2,12 @@
   "Construction helpers and default operator environment for compile-2."
   (:refer-clojure :exclude [* + - /])
   (:require [clojure.core :as core]
+            [clojure.set :as set]
             [propagators.cells.value :as value]
+            [propagators.compiler-2.context :as context]
             [propagators.compiler-2.env :as env]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.dependency :as dependency]
             [propagators.datastructures.scope-source :as scope-source]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
@@ -52,6 +55,18 @@
                               network)]
       [network' [prop-id] out-id])))
 
+(def contextual-operator-key ::contextual-operator?)
+
+(defn contextual-operator?
+  [operator]
+  (true? (-> operator meta contextual-operator-key)))
+
+(defn- unwrap-compiler-value
+  [v]
+  (-> v
+      scope-source/unwrap
+      dependency/unwrap))
+
 (defn primitive-operator
   "Compile-2-local primitive wrapper that waits for partial inputs."
   [f]
@@ -59,7 +74,7 @@
     (let [[prop-id network']
           ((prop/construct-propagator
             (fn [_inputs _outputs current-net]
-              (let [values (mapv #(scope-source/unwrap
+              (let [values (mapv #(unwrap-compiler-value
                                     (net/network-cell-strongest current-net %))
                                  arg-ids)]
                 (if (apply value/any-unusable-values? values)
@@ -70,6 +85,56 @@
            network)]
       [network' [prop-id] out-id])))
 
+(defn- dependency-sources
+  [v]
+  (let [scope-unwrapped (scope-source/unwrap v)
+        scope-source (when (scope-source/scope-value? v)
+                       {:dependency/type :compiler-2/scope-source
+                        :scope/id (scope-source/source-scope v)
+                        :scope/chain (scope-source/context-chain v)})]
+    (cond-> (if (dependency/dependency-value? scope-unwrapped)
+              (dependency/sources scope-unwrapped)
+              #{})
+      scope-source (conj scope-source))))
+
+(defn contextual-primitive-operator
+  "Primitive wrapper that reads the implicit compiler-2 context cell and emits
+  a dependency value."
+  [f]
+  (with-meta
+    (fn [network context-id arg-ids out-id]
+      (let [inputs (into [context-id] arg-ids)
+            [prop-id network']
+            ((prop/construct-propagator
+              (fn [_inputs _outputs current-net]
+                (let [context-value (net/network-cell-strongest current-net
+                                                                context-id)
+                      arg-values (mapv #(net/network-cell-strongest current-net %)
+                                       arg-ids)
+                      bases (mapv unwrap-compiler-value arg-values)
+                      unusable-input? (or (value/unusable? context-value)
+                                          (apply value/any-unusable-values?
+                                                 bases))
+                      base-result (if unusable-input?
+                                    value/nothing
+                                    (apply f bases))]
+                  (if (or unusable-input?
+                          (value/unusable? base-result))
+                    []
+                    [(message out-id
+                              (dependency/dependency-value
+                               base-result
+                               (conj (apply set/union
+                                            (map dependency-sources
+                                                 arg-values))
+                                     (context/dependency-source
+                                      context-value))))])))
+              inputs
+              [out-id])
+             network)]
+        [network' [prop-id] out-id]))
+    {contextual-operator-key true}))
+
 (defn- bi-sync-operator []
   (fn [network arg-ids _out-id]
     (let [[a b] (vec arg-ids)]
@@ -79,16 +144,23 @@
             [b->a network''] ((stdlib-prop/id b a) network')]
         [network'' [a->b b->a] b]))))
 
-(defn default-env []
+(defn- operator-env
+  [operator-builder]
   (-> (obj/empty-compound-object)
       (env/set-depth 0)
-      (env/bind-at '+ (primitive-operator core/+) 0)
-      (env/bind-at '- (primitive-operator core/-) 0)
-      (env/bind-at '* (primitive-operator core/*) 0)
-      (env/bind-at '/ (primitive-operator core//) 0)
+      (env/bind-at '+ (operator-builder core/+) 0)
+      (env/bind-at '- (operator-builder core/-) 0)
+      (env/bind-at '* (operator-builder core/*) 0)
+      (env/bind-at '/ (operator-builder core//) 0)
       (env/bind-at 'switch
-                   (primitive-operator
+                   (operator-builder
                     (fn [x enabled?]
                       (if enabled? x value/nothing)))
                    0)
       (env/bind-at '<-> (bi-sync-operator) 0)))
+
+(defn default-env []
+  (operator-env primitive-operator))
+
+(defn dependency-env []
+  (operator-env contextual-primitive-operator))
