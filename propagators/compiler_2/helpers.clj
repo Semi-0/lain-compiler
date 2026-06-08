@@ -14,6 +14,7 @@
             [propagators.network :as net]
             [propagators.network-builder :as nb]
             [propagators.propagator :as prop]
+            [propagators.stdlib.arithmetic.behavior :as behavior-arithmetic]
             [propagators.stdlib.prop :as stdlib-prop])
   (:import [java.nio.charset StandardCharsets]
            [java.util UUID]))
@@ -178,7 +179,21 @@
                                    (map dependency-sources
                                         arg-values))
                             (context/dependency-source
-                             context-value))))])))}))
+                            context-value))))])))}))
+
+(defn behavior-operator
+  "Compiler-2 operator wrapper for behavior-history stdlib operators."
+  [op f]
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[prop-id network']
+            ((apply (behavior-arithmetic/behavior-propagator op f)
+                    (conj (vec arg-ids) out-id))
+             network)]
+        [network' [prop-id] out-id]))
+    {application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (behavior-arithmetic/behavior-messages op f arg-ids out-id current-net))}))
 
 (defn- bi-sync-operator []
   (with-meta
@@ -225,3 +240,12 @@
 
 (defn dependency-env []
   (operator-env contextual-primitive-operator))
+
+(defn behavior-env []
+  (-> (obj/empty-compound-object)
+      (env/set-depth 0)
+      (env/bind-at '+ (behavior-operator :+ core/+) 0)
+      (env/bind-at '- (behavior-operator :- core/-) 0)
+      (env/bind-at '* (behavior-operator :* core/*) 0)
+      (env/bind-at '/ (behavior-operator :/ core//) 0)
+      (env/bind-at '<-> (bi-sync-operator) 0)))
