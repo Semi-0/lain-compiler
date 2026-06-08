@@ -2,26 +2,18 @@
   "Plain-data AST constructors for compile-2."
   (:require [propagators.datastructures.compound-object :as obj]))
 
+(declare ast)
+
 (defn lit [v] {:ast/type :literal :ast/value v})
 (defn sym [s] {:ast/type :symbol :ast/name s})
-
-(declare ast)
 
 (defn app [op & args]
   {:ast/type :apply
    :ast/operator (ast op)
    :ast/args (mapv ast args)})
 
-(defn app->
-  "Application with an explicit output cell expression."
-  [op args out]
-  {:ast/type :apply
-   :ast/operator (ast op)
-   :ast/args (mapv ast args)
-   :ast/output (ast out)})
-
-(defn do* [& body]
-  {:ast/type :do
+(defn sequence* [& body]
+  {:ast/type :sequence
    :ast/body (mapv ast body)})
 
 (defn let-cell [names body]
@@ -29,16 +21,15 @@
    :ast/names (vec names)
    :ast/body (ast body)})
 
+(defn network [inputs body]
+  {:ast/type :network
+   :ast/inputs (vec inputs)
+   :ast/body (ast body)})
+
 (defn compound [{:keys [inputs output]} body]
   {:ast/type :compound
    :ast/inputs (vec inputs)
    :ast/output output
-   :ast/body (ast body)})
-
-(defn let-compound [name compound-expr body]
-  {:ast/type :let-compound
-   :ast/name name
-   :ast/value (ast compound-expr)
    :ast/body (ast body)})
 
 (defn ast [x]

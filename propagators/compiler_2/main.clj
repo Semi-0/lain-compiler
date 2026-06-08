@@ -1,13 +1,13 @@
 (ns propagators.compiler-2.main
-  "Meander-based compiler core for compile-2."
-  (:require [meander.epsilon :as m]
-            [propagators.boundary :as boundary]
+  "Generic compiler core for compile-2."
+  (:require [propagators.boundary :as boundary]
             [propagators.cells.diff :refer [diff-internal-output-cells]]
             [propagators.cells.value :as value]
             [propagators.closure :as closure]
             [propagators.compiler-2.ast :as ast]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.parser :as parser]
             [propagators.datastructures.compound-object :as obj]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
@@ -25,7 +25,7 @@
 (def closure-output-slot :closure/output)
 (def closure-scope-slot :closure/scope)
 
-(declare compile-node)
+(declare g:compile)
 
 (defn- with-path [state path]
   (assoc state :path path))
@@ -34,9 +34,10 @@
   (let [base-path (:path state)]
     (reduce
      (fn [[state _] [idx form]]
-       (let [[state' result] (compile-node
-                              (h/child (with-path state base-path) idx)
-                              form)]
+       (let [[state' result] (g:compile form
+                                         (:env state)
+                                         (h/child (with-path state base-path)
+                                                  idx))]
          [(with-path state' base-path) result]))
      [state nil]
      (map-indexed vector forms))))
@@ -47,22 +48,14 @@
     (let [[state' binding] (h/new-cell state [:symbol sym])]
       [(assoc state' :env (env/bind-local env sym binding)) binding])))
 
-(defn- output-binding [state maybe-output]
-  (if (some? maybe-output)
-    (let [[state' binding] (compile-node (h/child state :output) maybe-output)]
-      (if (env/binding-id binding)
-        [state' binding]
-        (throw (ex-info "application output must compile to a cell"
-                        {:output binding}))))
-    (h/new-cell state :result)))
-
 (defn- compile-args [state args]
   (let [base-path (:path state)]
     (reduce
      (fn [[state acc] [idx arg]]
-       (let [[state' binding] (compile-node
-                               (h/child (with-path state base-path) [:arg idx])
-                               arg)]
+       (let [[state' binding] (g:compile arg
+                                         (:env state)
+                                         (h/child (with-path state base-path)
+                                                  [:arg idx]))]
          [(with-path state' base-path) (conj acc binding)]))
      [state []]
      (map-indexed vector args))))
@@ -199,35 +192,70 @@
          network)]
     [network' [prop-id] out-id]))
 
-(defn- compile-application [state op args maybe-output]
-  (let [base-path (:path state)
-        [state' op-value] (compile-node (h/child state :operator) op)
-        [state'' arg-bindings] (compile-args (with-path state' base-path) args)
-        arg-ids (mapv env/binding-id arg-bindings)
-        [state''' out-binding] (output-binding (with-path state'' base-path)
-                                               maybe-output)
-        out-id (env/binding-id out-binding)]
+(defn- result-cell [state]
+  (h/new-cell state :result))
+
+(defmulti g:advance
+  (fn [_binding _state] :default))
+
+(defmethod g:advance :default
+  [binding _state]
+  binding)
+
+(defmulti g:apply
+  (fn [operator-binding _operand-forms _calling-env _state _out-id]
+    (cond
+      (fn? operator-binding) :primitive
+      (env/binding-id operator-binding) :cell
+      :else :unsupported)))
+
+(defmethod g:apply :primitive
+  [operator-binding operand-forms _calling-env state out-id]
+  (let [[state' arg-bindings] (compile-args state operand-forms)
+        arg-ids (mapv env/binding-id arg-bindings)]
     (when-not (every? some? arg-ids)
       (throw (ex-info "application arguments must compile to cells"
                       {:args arg-bindings})))
     (let [[network' prop-ids result-id]
-          (cond
-            (fn? op-value)
-            (op-value (:net state''') arg-ids out-id)
-
-            (env/binding-id op-value)
-            (apply-closure-ordered (:net state''')
-                                   (env/binding-id op-value)
-                                   arg-ids
-                                   out-id)
-
-            :else
-            (throw (ex-info "application operator is not callable"
-                            {:operator op-value})))]
-      [(-> state'''
+          (operator-binding (:net state') arg-ids out-id)]
+      [(-> state'
            (assoc :net network')
            (h/add-props prop-ids))
        (env/cell-binding result-id)])))
+
+(defmethod g:apply :cell
+  [operator-binding operand-forms _calling-env state out-id]
+  (let [[state' arg-bindings] (compile-args state operand-forms)
+        arg-ids (mapv env/binding-id arg-bindings)]
+    (when-not (every? some? arg-ids)
+      (throw (ex-info "application arguments must compile to cells"
+                      {:args arg-bindings})))
+    (let [[network' prop-ids result-id]
+          (apply-closure-ordered (:net state')
+                                 (env/binding-id operator-binding)
+                                 arg-ids
+                                 out-id)]
+      [(-> state'
+           (assoc :net network')
+           (h/add-props prop-ids))
+       (env/cell-binding result-id)])))
+
+(defmethod g:apply :unsupported
+  [operator-binding _operand-forms _calling-env _state _out-id]
+  (throw (ex-info "application operator is not callable"
+                  {:operator operator-binding})))
+
+(defn- compile-application [state op args]
+  (let [base-path (:path state)
+        [state' op-binding] (g:compile op
+                                       (:env state)
+                                       (h/child (with-path state base-path)
+                                                :operator))
+        state' (with-path state' base-path)
+        operator-binding (g:advance op-binding state')
+        [state'' out-binding] (result-cell state')
+        out-id (env/binding-id out-binding)]
+    (g:apply operator-binding args (:env state'') state'' out-id)))
 
 (defn- compile-let-cell [state names body]
   (let [base-path (:path state)
@@ -243,11 +271,20 @@
               (env/bind-local scoped-env name binding)]))
          [state child-env]
          (map-indexed vector names))]
-    (compile-node (h/child (assoc state' :env scoped-env)
-                           :body)
-                  body)))
+    (g:compile body
+               scoped-env
+               (h/child (assoc state' :env scoped-env) :body))))
 
-(defn- compile-compound [state inputs output body]
+(defn- body-env [lexical-env inputs output input-ids out-id]
+  (let [base-env (cond-> (env/sub-env lexical-env)
+                   output (env/bind-local output (env/cell-binding out-id)))]
+    (reduce
+     (fn [scoped-env [sym id]]
+       (env/bind-local scoped-env sym (env/cell-binding id)))
+     base-env
+     (map vector inputs input-ids))))
+
+(defn- compile-network [state inputs output body]
   (let [lexical-env (:env state)
         seed (:seed state)
         path (:path state)
@@ -256,24 +293,17 @@
         (closure/closure
          (fn [closure-net input-ids output-ids network]
            (let [input-ids (vec input-ids)
-                 arg-inner input-ids
                  [out-inner] output-ids
                  lexical-env (or (net/network-dict-entry closure-net closure-env-slot)
                                  lexical-env)
-                 body-env
-                 (reduce
-                  (fn [scoped-env [sym id]]
-                    (env/bind-local scoped-env sym (env/cell-binding id)))
-                  (env/bind-local (env/sub-env lexical-env)
-                                  output
-                                  (env/cell-binding out-inner))
-                 (map vector inputs arg-inner))
-                 [state' result] (compile-node {:net network
-                                                :env body-env
-                                                :seed [seed path :closure]
-                                                :path []
-                                                :props []}
-                                               body)
+                 body-env (body-env lexical-env inputs output input-ids out-inner)
+                 [state' result] (g:compile body
+                                             body-env
+                                             {:net network
+                                              :env body-env
+                                              :seed [seed path :closure]
+                                              :path []
+                                              :props []})
                  body-net (nb/run-propagators (:net state') (:props state'))
                  result-id (env/binding-id result)]
              (if (and result-id (not= result-id out-inner))
@@ -310,48 +340,47 @@
          (h/add-props [env-slot-prop]))
      (env/compound-binding closure-id)]))
 
-(defn- compile-node [state expr]
-  (m/match (ast/ast-map expr)
-    {:ast/type :literal :ast/value ?v}
-    (h/new-cell state :literal ?v)
+(defn- expression-kind [expr]
+  (let [type (:ast/type (ast/ast-map expr))]
+    (case type
+      :apply :application
+      type)))
 
-    {:ast/type :symbol :ast/name ?s}
-    (compile-symbol state ?s)
+(defmulti g:compile
+  (fn [expr _env _state]
+    (expression-kind expr)))
 
-    {:ast/type :apply
-     :ast/operator ?op
-     :ast/args ?args
-     :ast/output ?out}
-    (compile-application state ?op ?args ?out)
+(defmethod g:compile :literal
+  [expr _env state]
+  (h/new-cell state :literal (:ast/value (ast/ast-map expr))))
 
-    {:ast/type :apply
-     :ast/operator ?op
-     :ast/args ?args}
-    (compile-application state ?op ?args nil)
+(defmethod g:compile :symbol
+  [expr _env state]
+  (compile-symbol state (:ast/name (ast/ast-map expr))))
 
-    {:ast/type :do :ast/body ?body}
-    (compile-seq state ?body)
+(defmethod g:compile :sequence
+  [expr _env state]
+  (compile-seq state (:ast/body (ast/ast-map expr))))
 
-    {:ast/type :let-cell :ast/names ?names :ast/body ?body}
-    (compile-let-cell state ?names ?body)
+(defmethod g:compile :let-cell
+  [expr _env state]
+  (let [m (ast/ast-map expr)]
+    (compile-let-cell state (:ast/names m) (:ast/body m))))
 
-    {:ast/type :compound
-     :ast/inputs ?inputs
-     :ast/output ?output
-     :ast/body ?body}
-    (compile-compound state ?inputs ?output ?body)
+(defmethod g:compile :network
+  [expr _env state]
+  (let [m (ast/ast-map expr)]
+    (compile-network state (:ast/inputs m) nil (:ast/body m))))
 
-    {:ast/type :let-compound
-     :ast/name ?name
-     :ast/value ?value
-     :ast/body ?body}
-    (let [[state' binding] (compile-node (h/child state [:let-compound ?name :value])
-                                         ?value)
-          env' (env/bind-local (:env state') ?name binding)]
-      (compile-node (h/child (assoc state' :env env'
-                                     :path (:path state))
-                             [:let-compound ?name :body])
-                    ?body))))
+(defmethod g:compile :compound
+  [expr _env state]
+  (let [m (ast/ast-map expr)]
+    (compile-network state (:ast/inputs m) (:ast/output m) (:ast/body m))))
+
+(defmethod g:compile :application
+  [expr _env state]
+  (let [m (ast/ast-map expr)]
+    (compile-application state (:ast/operator m) (:ast/args m))))
 
 (defn- annotated-net [network result props env]
   (-> network
@@ -366,18 +395,28 @@
   ([expr env {:keys [net seed path]
               :or {net net/empty-net path []}}]
    (let [seed (or seed (ids/new-node-id))
-         [state result] (compile-node {:net net
-                                       :env env
-                                       :seed seed
-                                       :path path
-                                       :props []}
-                                      expr)
+         [state result] (g:compile expr
+                                   env
+                                   {:net net
+                                    :env env
+                                    :seed seed
+                                    :path path
+                                    :props []})
          network (annotated-net (:net state) result (:props state) (:env state))]
      {:net network
       :cell (env/binding-id result)
       :binding result
       :env (:env state)
       :props (:props state)})))
+
+(defn compile-source
+  "Parse and compile one compiler-2 source string."
+  ([source]
+   (compile-expr (parser/parse-string source)))
+  ([source env]
+   (compile-expr (parser/parse-string source) env))
+  ([source env opts]
+   (compile-expr (parser/parse-string source) env opts)))
 
 (defn compiled-result [compiled-net]
   (net/network-dict-entry compiled-net compiler-result-key))
@@ -386,7 +425,7 @@
   (net/network-dict-entry compiled-net compiler-props-key))
 
 (defn p:compile-expr
-  "Compile AST/env cells into a compiled network cell."
+  "Compile source/env cells into a compiled network cell."
   [expr-id env-id out-id]
   (prop/construct-propagator
    (fn [_inputs _outputs network]

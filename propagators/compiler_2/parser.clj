@@ -1,9 +1,15 @@
 (ns propagators.compiler-2.parser
-  "Reader-backed source parser for compile-2 expressions."
+  "Reader-backed source parser for compile-2 expressions.
+
+  The surface language is intentionally small. `::` is not valid EDN, so the
+  parser rewrites list-head `::` into the internal `:compiler/network` marker
+  before reading."
   (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [propagators.compiler-2.ast :as ast])
   (:import [java.io PushbackReader StringReader]))
 
+(def network-marker :compiler/network)
 (def ^:private eof (Object.))
 
 (declare parse-form)
@@ -11,10 +17,13 @@
 (defn- parse-error [message data]
   (throw (ex-info message data)))
 
+(defn- preprocess-source [source]
+  (str/replace source #"\(\s*::(?=\s)" (str "(" network-marker)))
+
 (defn read-form
-  "Read exactly one EDN/Clojure data form from `source`."
+  "Read exactly one source form."
   [source]
-  (let [reader (PushbackReader. (StringReader. source))
+  (let [reader (PushbackReader. (StringReader. (preprocess-source source)))
         form (edn/read {:eof eof} reader)
         trailing (edn/read {:eof eof} reader)]
     (when (identical? eof form)
@@ -33,26 +42,21 @@
     (parse-error (str role " must contain only symbols") {:value v}))
   v)
 
-(defn- body-form [forms]
-  (case (count forms)
-    0 (parse-error "body requires at least one expression" {:body forms})
-    1 (parse-form (first forms))
-    (apply ast/do* (map parse-form forms))))
+(defn- body-form [forms role]
+  (when-not (seq forms)
+    (parse-error (str role " requires at least one body expression")
+                 {:body forms}))
+  (if (= 1 (count forms))
+    (parse-form (first forms))
+    (apply ast/sequence* (map parse-form forms))))
 
-(defn- parse-let-cell [args]
-  (let [[names & body] args]
-    (ast/let-cell (symbol-vector names "let-cell bindings")
-                  (body-form body))))
+(defn- parse-let-cell [[names & body]]
+  (ast/let-cell (symbol-vector names "let-cell bindings")
+                (body-form body "let-cell")))
 
-(defn- parse-let-compound [args]
-  (let [[name compound-expr & body] args]
-    (when-not (symbol? name)
-      (parse-error "let-compound name must be a symbol" {:name name}))
-    (when-not compound-expr
-      (parse-error "let-compound requires a compound expression" {:args args}))
-    (ast/let-compound name
-                      (parse-form compound-expr)
-                      (body-form body))))
+(defn- parse-network [[params & body]]
+  (ast/network (symbol-vector params ":: params")
+               (body-form body "::")))
 
 (defn- parse-compound-spec [spec]
   (cond
@@ -67,9 +71,8 @@
     (parse-error "compound expects an input vector or {:inputs ... :output ...}"
                  {:spec spec})))
 
-(defn- parse-compound [args]
-  (let [[spec & rest-args] args
-        [inputs map-output] (parse-compound-spec spec)
+(defn- parse-compound [[spec & rest-args]]
+  (let [[inputs map-output] (parse-compound-spec spec)
         [output body] (if (some? map-output)
                         [map-output rest-args]
                         [(first rest-args) (rest rest-args)])]
@@ -77,43 +80,42 @@
       (parse-error "compound output must be a symbol" {:output output}))
     (ast/compound {:inputs inputs
                    :output output}
-                  (body-form body))))
+                  (body-form body "compound"))))
 
-(defn- parse-app-out [args]
-  (let [[op arg-forms out & extra] args]
-    (when (seq extra)
-      (parse-error "app-> expects exactly operator, args vector, and output"
-                   {:args args}))
-    (when-not (vector? arg-forms)
-      (parse-error "app-> args must be a vector" {:args arg-forms}))
-    (ast/app-> (parse-form op)
-               (mapv parse-form arg-forms)
-               (parse-form out))))
+(defn- removed-form [form]
+  (parse-error (str (first form) " is not part of compiler-2 target syntax")
+               {:form form}))
 
 (defn- parse-application [forms]
-  (let [op (first forms)
-        args (rest forms)]
-    (apply ast/app (parse-form op) (map parse-form args))))
+  (apply ast/app (map parse-form forms)))
 
 (defn parse-form
-  "Convert one reader form into compiler-2 AST data."
+  "Normalize one reader form into compiler-2 source IR."
   [form]
   (cond
     (seq? form)
     (case (first form)
-      do (body-form (rest form))
       let-cell (parse-let-cell (rest form))
-      let-compound (parse-let-compound (rest form))
+      :compiler/network (parse-network (rest form))
       compound (parse-compound (rest form))
-      app-> (parse-app-out (rest form))
+      app-> (removed-form form)
+      do (removed-form form)
+      let-network (removed-form form)
+      let-compound (removed-form form)
+      network (removed-form form)
       (parse-application form))
 
-    (symbol? form) (ast/sym form)
+    (vector? form)
+    (mapv parse-form form)
 
-    :else (ast/lit form)))
+    (symbol? form)
+    (ast/sym form)
+
+    :else
+    (ast/lit form)))
 
 (defn parse-string
-  "Parse one source string into compiler-2 AST data."
+  "Parse one source string into compiler-2 source IR."
   [source]
   (parse-form (read-form source)))
 
