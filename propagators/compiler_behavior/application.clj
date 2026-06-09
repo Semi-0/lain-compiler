@@ -82,11 +82,10 @@
 (defn- behavior-output-adapter
   [result-id out-inner]
   (prop/construct-propagator
-   (fn [_inputs _outputs current-net]
+   (prop/concrete-propagator
+    (fn [_inputs _outputs current-net]
      (let [result-view (behavior-view-or-nothing current-net result-id)]
-       (if (value/unusable? result-view)
-         []
-         [(message out-inner result-view)])))
+       [(message out-inner result-view)])))
    [result-id]
    [out-inner]))
 

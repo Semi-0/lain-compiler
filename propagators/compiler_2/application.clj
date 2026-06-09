@@ -129,12 +129,11 @@
 (defn- output-adapter
   [result-id out-inner]
   (prop/construct-propagator
-   (fn [_inputs _outputs current-net]
+   (prop/concrete-propagator
+    (fn [_inputs _outputs current-net]
      (let [result-value (strongest-or-nothing current-net result-id)]
-       (if (value/unusable? result-value)
-         []
-         [(message out-inner
-                   (externalize-output-value result-value current-net))])))
+       [(message out-inner
+                 (externalize-output-value result-value current-net))])))
    [result-id]
    [out-inner]))
 

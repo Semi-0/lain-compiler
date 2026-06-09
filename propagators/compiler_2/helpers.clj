@@ -87,25 +87,28 @@
     (fn [network arg-ids out-id]
       (let [[prop-id network']
             ((prop/construct-propagator
-              (fn [_inputs _outputs current-net]
+              (prop/concrete-propagator
+               (fn [_inputs _outputs current-net]
                 (let [values (mapv #(unwrap-compiler-value
                                       (net/network-cell-strongest current-net %))
                                    arg-ids)]
                   (if (apply value/any-unusable-values? values)
                     []
-                    [(message out-id (apply f values))])))
+                    [(message out-id (apply f values))]))))
               arg-ids
               [out-id])
              network)]
         [network' [prop-id] out-id]))
     {application-activate-key
      (fn [current-net _context-id arg-ids out-id]
-       (let [values (mapv #(unwrap-compiler-value
-                             (net/network-cell-strongest current-net %))
-                          arg-ids)]
-         (if (apply value/any-unusable-values? values)
-           []
-           [(message out-id (apply f values))])))}))
+       (if-not (prop/concrete-inputs? current-net arg-ids)
+         []
+         (let [values (mapv #(unwrap-compiler-value
+                               (net/network-cell-strongest current-net %))
+                            arg-ids)]
+           (if (apply value/any-unusable-values? values)
+             []
+             [(message out-id (apply f values))]))))}))
 
 (defn- dependency-sources
   [v]
@@ -128,7 +131,8 @@
       (let [inputs (into [context-id] arg-ids)
             [prop-id network']
             ((prop/construct-propagator
-              (fn [_inputs _outputs current-net]
+              (prop/concrete-propagator
+               (fn [_inputs _outputs current-net]
                 (let [context-value (net/network-cell-strongest current-net
                                                                 context-id)
                       arg-values (mapv #(net/network-cell-strongest current-net %)
@@ -150,7 +154,7 @@
                                             (map dependency-sources
                                                  arg-values))
                                      (context/dependency-source
-                                      context-value))))])))
+                                      context-value))))]))))
               inputs
               [out-id])
              network)]
@@ -158,28 +162,29 @@
     {contextual-operator-key true
      application-activate-key
      (fn [current-net context-id arg-ids out-id]
-       (let [context-value (net/network-cell-strongest current-net
-                                                       context-id)
-             arg-values (mapv #(net/network-cell-strongest current-net %)
-                              arg-ids)
-             bases (mapv unwrap-compiler-value arg-values)
-             unusable-input? (or (value/unusable? context-value)
-                                 (apply value/any-unusable-values?
-                                        bases))
-             base-result (if unusable-input?
-                           value/nothing
-                           (apply f bases))]
-         (if (or unusable-input?
-                 (value/unusable? base-result))
+       (let [inputs (into [context-id] arg-ids)]
+         (if-not (prop/concrete-inputs? current-net inputs)
            []
-           [(message out-id
-                     (dependency/dependency-value
-                      base-result
-                      (conj (apply set/union
-                                   (map dependency-sources
-                                        arg-values))
-                            (context/dependency-source
-                            context-value))))])))}))
+           (let [context-value (net/network-cell-strongest current-net
+                                                           context-id)
+                 arg-values (mapv #(net/network-cell-strongest current-net %)
+                                  arg-ids)
+                 bases (mapv unwrap-compiler-value arg-values)
+                 unusable-input? (apply value/any-unusable-values? bases)
+                 base-result (if unusable-input?
+                               value/nothing
+                               (apply f bases))]
+             (if (or unusable-input?
+                     (value/unusable? base-result))
+               []
+               [(message out-id
+                         (dependency/dependency-value
+                          base-result
+                          (conj (apply set/union
+                                       (map dependency-sources
+                                            arg-values))
+                                (context/dependency-source
+                                 context-value))))])))))}))
 
 (defn behavior-operator
   "Compiler-2 operator wrapper for behavior-history stdlib operators."

@@ -172,40 +172,39 @@
   (new-behavior-cell state
                      :literal
                      (literal-behavior state
-                                       (:ast/value (ast/ast-map expr)))))
+                                       (ast/value expr))))
 
 (defmethod g:compile :symbol
   [expr _env state]
-  (common/compile-symbol state (:ast/name (ast/ast-map expr))))
+  (common/compile-symbol state (ast/name expr)))
 
 (defmethod g:compile :sequence
   [expr _env state]
-  (common/compile-seq g:compile state (:ast/body (ast/ast-map expr))))
+  (common/compile-seq g:compile state (ast/body expr)))
 
 (defmethod g:compile :let-cell
   [expr _env state]
-  (let [m (ast/ast-map expr)]
-    (common/compile-let-cell g:compile state (:ast/names m) (:ast/body m))))
+  (common/compile-let-cell g:compile
+                           state
+                           (ast/names expr)
+                           (ast/body expr)))
 
 (defmethod g:compile :network
   [expr _env state]
-  (let [m (ast/ast-map expr)]
-    (compile-network state (:ast/inputs m) nil (:ast/body m))))
+  (compile-network state (ast/inputs expr) nil (ast/body expr)))
 
 (defmethod g:compile :compound
   [expr _env state]
-  (let [m (ast/ast-map expr)]
-    (compile-network state (:ast/inputs m) (:ast/output m) (:ast/body m))))
+  (compile-network state (ast/inputs expr) (ast/output expr) (ast/body expr)))
 
 (defmethod g:compile :application
   [expr _env state]
-  (let [m (ast/ast-map expr)]
-    (common/compile-application g:compile
-                                g:advance
-                                g:apply
-                                state
-                                (:ast/operator m)
-                                (:ast/args m))))
+  (common/compile-application g:compile
+                              g:advance
+                              g:apply
+                              state
+                              (ast/operator expr)
+                              (ast/args expr)))
 
 (defn compile-expr
   "Compile AST data into a behavior-valued network and result cell."
@@ -247,17 +246,15 @@
   "Compile source/env cells into a behavior compiled network cell."
   [expr-id env-id out-id]
   (prop/construct-propagator
-   (fn [_inputs _outputs network]
+   (prop/concrete-propagator
+    (fn [_inputs _outputs network]
      (let [expr (net/network-cell-strongest network expr-id)
            env (net/network-cell-strongest network env-id)]
-       (if (or (value/unusable? expr)
-               (value/unusable? env))
-         []
-         (let [compiled (compile-expr expr
-                                      env
-                                      {:net network
-                                       :seed [:compile-behavior expr-id env-id]
-                                       :timestamp 0})]
-           [(message out-id (:net compiled))]))))
+       (let [compiled (compile-expr expr
+                                    env
+                                    {:net network
+                                     :seed [:compile-behavior expr-id env-id]
+                                     :timestamp 0})]
+         [(message out-id (:net compiled))]))))
    [expr-id env-id]
    [out-id]))

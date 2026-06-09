@@ -20,7 +20,7 @@
   (assoc state :path path))
 
 (defn expression-kind [expr]
-  (let [type (:ast/type (ast/ast-map expr))]
+  (let [type (ast/type expr)]
     (case type
       :apply :application
       type)))
@@ -114,7 +114,7 @@
                                  (:path state'')
                                  :application
                                  out-id)
-        operator-ast (ast/ast-map op)
+        operator-ast (ast/ast op)
         [state''' context-binding]
         (h/new-cell state''
                     :context
