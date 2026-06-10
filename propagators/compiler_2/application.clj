@@ -58,11 +58,19 @@
 (defn materialize-slot-object
   "Evaluate declared slot topology for one compound object in a local frame."
   [outer-net collection-id]
-  (let [decls (obj/slot-declarations-for outer-net collection-id)]
+  (let [raw-value (strongest-or-nothing outer-net collection-id)
+        source-value (if (obj/accessor-network? raw-value)
+                       (obj/compound-object (obj/accessor-source-slots raw-value))
+                       raw-value)
+        decls (obj/slot-declarations-for outer-net collection-id)]
     (if (empty? decls)
-      (strongest-or-nothing outer-net collection-id)
-      (let [parent-ids (->> decls vals (mapcat keys) (sort-by pr-str) vec)
-            n0 (copy-outer-cell net/empty-net outer-net collection-id)
+      source-value
+      (let [base-value (obj/compound-object source-value)
+            parent-ids (->> decls vals (mapcat keys) (sort-by pr-str) vec)
+            n0 (nb/install-cell net/empty-net
+                                collection-id
+                                base-value
+                                base-value)
             n1 (reduce #(copy-outer-cell %1 outer-net %2) n0 parent-ids)
             [slot-net prop-ids]
             (reduce
@@ -131,7 +139,7 @@
   (prop/construct-propagator
    (prop/concrete-propagator
     (fn [_inputs _outputs current-net]
-     (let [result-value (strongest-or-nothing current-net result-id)]
+     (let [result-value (materialize-slot-object current-net result-id)]
        [(message out-inner
                  (externalize-output-value result-value current-net))])))
    [result-id]
@@ -196,8 +204,10 @@
         arg-object (strongest-or-nothing network args-id)
         materialized-closure (when-not (value/unusable? closure-cv)
                                (materialize-slot-object network closure-id))
+        materialized-args (when-not (value/unusable? arg-object)
+                            (materialize-slot-object network args-id))
         arg-ids (when-not (value/unusable? arg-object)
-                  (argument-cell-ids arg-object))
+                  (argument-cell-ids materialized-args))
         arg-values (mapv #(strongest-or-nothing network %) arg-ids)]
     (if (or (value/unusable? closure-cv)
             (value/unusable? materialized-closure)
@@ -223,8 +233,9 @@
                                                  network))
         inputs (into [closure-id args-id] arg-ids)]
     (fn [network]
-      (let [[prop-id n] ((prop/construct-propagator activate inputs [out-id])
-                         network)]
+      (let [network* (reduce nb/ensure-cell network (conj inputs out-id))
+            [prop-id n] ((prop/construct-propagator activate inputs [out-id])
+                         network*)]
         [prop-id
          (net/update-net-dict-entry n
                                     apply-closure-props-key
@@ -283,8 +294,9 @@
                                          network))
         inputs (into [application-id operator-id args-id context-id] arg-ids)]
     (fn [network]
-      (let [[prop-id n] ((prop/construct-propagator activate inputs [out-id])
-                         network)]
+      (let [network* (reduce nb/ensure-cell network (conj inputs out-id))
+            [prop-id n] ((prop/construct-propagator activate inputs [out-id])
+                         network*)]
         [prop-id
          (net/update-net-dict-entry n
                                     apply-application-props-key
