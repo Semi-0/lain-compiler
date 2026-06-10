@@ -127,7 +127,7 @@
                                                          closure-object)
         closure-id (env/binding-id closure-binding)
         [env-slot-prop n']
-        ((obj/p:slot closure-value/closure-env-slot lexical-env-id closure-id)
+        ((obj/p:legacy-slot closure-value/closure-env-slot lexical-env-id closure-id)
          (:net state-with-closure))]
     [(-> state-with-closure
          (assoc :net n')

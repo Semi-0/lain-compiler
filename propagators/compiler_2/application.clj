@@ -50,7 +50,7 @@
   [n collection-id [slot-key parent->declaration]]
   (reduce
    (fn [[acc prop-ids] parent-id]
-     (let [[prop-id acc'] ((obj/p:slot slot-key parent-id collection-id) acc)]
+     (let [[prop-id acc'] ((obj/p:legacy-slot slot-key parent-id collection-id) acc)]
        [acc' (conj prop-ids prop-id)]))
    [n []]
    (sort-by pr-str (keys parent->declaration))))
