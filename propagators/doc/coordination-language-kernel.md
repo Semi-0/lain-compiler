@@ -159,7 +159,7 @@ These are kernel-adjacent design problems. They should be solved by tightening
 the declaration, merge, projection, and boundary model, not by turning the
 propagator language into a process language.
 
-## TODO: Uniform Dispatch Boundary
+## TODO: Unbounded Procedure Definitions
 
 2026-06-12 note: layered procedures and generic procedures currently work by a
 non-uniform bridge. Their live declarations use accessor-first compound-object
@@ -167,24 +167,41 @@ topology, but their application paths materialize temporary legacy slot objects
 inside activation-local networks before dispatch. That bridge preserves current
 behavior, but it is not the final procedure model.
 
+The better framing is that layered procedures and generic procedures should be
+library definitions written with the same unbounded recursion/iteration
+primitive needed for nested compound data. Both procedures inspect slotful
+procedure data, discover layer or method branches, build branch application
+topology, collect branch results, reduce/select an output, and keep reacting to
+later slot changes. Their current APIs are awkward because they hand-code this
+pattern without the substrate.
+
 The next design sequence should be:
 
-1. Surgically extend the kernel with an explicit subenv dispatch boundary. A
-   propagator running an inner/simulated network should be able to import
-   selected outer cell content into inner avatars and export selected changed
-   inner cells back as ordinary outer messages. This boundary must be explicit,
-   bidirectional, and message-shaped; it must not mutate the live outer graph or
-   persist activation-local taps/frontiers as durable data.
-2. Table general unbounded recursion and iteration until that boundary is
-   specified. Without it, recursive inner networks cannot consistently dispatch
-   newly discovered nested compound/accessor state, and pure declaration-first
-   expansion only remains incremental over already-declared topology.
-3. Revisit generic procedures and layered procedures after the boundary exists.
-   Their method/layer dispatch should not depend on ad hoc materialization into
-   legacy slot objects. Both should use one uniform procedure boundary for
-   slotful procedure data, branch application, result-bank reduction, and
-   outward message projection.
-4. Ban the kernel from extending cell merge/strongest by defining generic
+1. Define the unbounded recursion/iteration primitive as the procedure
+   substrate. It must express "walk slotful data, expand one frame, accumulate
+   declaration/result state, and continue when new structure appears" without a
+   procedure-specific dispatcher.
+2. Surgically extend the kernel only enough to support that primitive with an
+   explicit subenv dispatch boundary. A propagator running an inner/simulated
+   network should be able to import selected outer cell content into inner
+   avatars and export selected changed inner cells back as ordinary outer
+   messages. This boundary must be explicit, bidirectional, and message-shaped;
+   it must not mutate the live outer graph or persist activation-local
+   taps/frontiers as durable data.
+3. Table general unbounded recursion and iteration implementation work until
+   the primitive and boundary contract are specified. Without that contract,
+   recursive inner networks cannot consistently dispatch newly discovered nested
+   compound/accessor state, and pure declaration-first expansion only remains
+   incremental over already-declared topology.
+4. Rebuild layered procedures and generic procedures as derived definitions over
+   that primitive. Layered procedures become recursion/iteration over layer
+   slots; generic procedures become recursion/iteration over method slots plus
+   policy/default slots. Their method/layer dispatch should not depend on ad hoc
+   materialization into legacy slot objects.
+5. Remove or quarantine the current legacy materialization bridges once the
+   derived definitions are available. Until then, treat them as compatibility
+   boundaries, not the intended procedure model.
+6. Ban the kernel from extending cell merge/strongest by defining generic
    propagator handlers at live runtime. Merge/strongest extension may still be
    modeled inside a simulated or explicitly extendable network propagator, where
    the extended generic environment is part of that network value. The live
@@ -192,6 +209,6 @@ The next design sequence should be:
    effects.
 
 This keeps the minimal kernel coordination-oriented while making the missing
-dispatch boundary explicit. Procedure extension, recursion, iteration, and cell
-protocol experiments can then share the same subenv/message protocol instead of
-each building a separate legacy materialization bridge.
+procedure recursion substrate explicit. Procedure extension, recursion,
+iteration, and cell protocol experiments can then share the same subenv/message
+protocol instead of each building a separate legacy materialization bridge.
