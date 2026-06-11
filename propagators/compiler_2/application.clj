@@ -59,8 +59,10 @@
   "Evaluate declared slot topology for one compound object in a local frame."
   [outer-net collection-id]
   (let [raw-value (strongest-or-nothing outer-net collection-id)
-        source-value (if (obj/accessor-network? raw-value)
-                       (obj/compound-object (obj/accessor-source-slots raw-value))
+        source-slots (when (obj/accessor-network? raw-value)
+                       (obj/accessor-source-slots raw-value))
+        source-value (if (seq source-slots)
+                       (obj/compound-object source-slots)
                        raw-value)
         decls (obj/slot-declarations-for outer-net collection-id)]
     (if (empty? decls)
