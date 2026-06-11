@@ -158,3 +158,40 @@ future subsystem, not in propagator activation or scheduler logic.
 These are kernel-adjacent design problems. They should be solved by tightening
 the declaration, merge, projection, and boundary model, not by turning the
 propagator language into a process language.
+
+## TODO: Uniform Dispatch Boundary
+
+2026-06-12 note: layered procedures and generic procedures currently work by a
+non-uniform bridge. Their live declarations use accessor-first compound-object
+topology, but their application paths materialize temporary legacy slot objects
+inside activation-local networks before dispatch. That bridge preserves current
+behavior, but it is not the final procedure model.
+
+The next design sequence should be:
+
+1. Surgically extend the kernel with an explicit subenv dispatch boundary. A
+   propagator running an inner/simulated network should be able to import
+   selected outer cell content into inner avatars and export selected changed
+   inner cells back as ordinary outer messages. This boundary must be explicit,
+   bidirectional, and message-shaped; it must not mutate the live outer graph or
+   persist activation-local taps/frontiers as durable data.
+2. Table general unbounded recursion and iteration until that boundary is
+   specified. Without it, recursive inner networks cannot consistently dispatch
+   newly discovered nested compound/accessor state, and pure declaration-first
+   expansion only remains incremental over already-declared topology.
+3. Revisit generic procedures and layered procedures after the boundary exists.
+   Their method/layer dispatch should not depend on ad hoc materialization into
+   legacy slot objects. Both should use one uniform procedure boundary for
+   slotful procedure data, branch application, result-bank reduction, and
+   outward message projection.
+4. Ban the kernel from extending cell merge/strongest by defining generic
+   propagator handlers at live runtime. Merge/strongest extension may still be
+   modeled inside a simulated or explicitly extendable network propagator, where
+   the extended generic environment is part of that network value. The live
+   kernel merge path should not be mutated by ordinary procedure-definition
+   effects.
+
+This keeps the minimal kernel coordination-oriented while making the missing
+dispatch boundary explicit. Procedure extension, recursion, iteration, and cell
+protocol experiments can then share the same subenv/message protocol instead of
+each building a separate legacy materialization bridge.
