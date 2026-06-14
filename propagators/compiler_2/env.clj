@@ -203,11 +203,10 @@
   "One-way parent -> child scope environment expansion."
   [parent-env-id child-env-id]
   (prop/construct-propagator
-   (fn [_inputs _outputs network]
+   (prop/concrete-propagator
+    (fn [_inputs _outputs network]
      (let [parent-env (net/network-cell-strongest network parent-env-id)]
-       (if (value/unusable? parent-env)
-         []
-         [(message child-env-id (sub-env parent-env))])))
+       [(message child-env-id (sub-env parent-env))])))
    [parent-env-id]
    [child-env-id]))
 
@@ -219,12 +218,10 @@
   "
   [sym env-id binding-id out-env-id]
   (prop/construct-propagator
-   (fn [_inputs _outputs network]
+   (prop/concrete-propagator
+    (fn [_inputs _outputs network]
      (let [child-env (net/network-cell-strongest network env-id)
            binding (net/network-cell-strongest network binding-id)]
-       (if (or (value/unusable? child-env)
-               (value/unusable? binding))
-         []
-         [(message out-env-id (bind-local child-env sym binding))])))
+       [(message out-env-id (bind-local child-env sym binding))])))
    [env-id binding-id]
    [out-env-id]))
