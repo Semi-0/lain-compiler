@@ -13,6 +13,7 @@ Source files:
 - `propagators/datastructures/scope_source.clj`
 - `propagators/datastructures/dependency.clj`
 - `test/propagators_compile_2_test.clj`
+- `test/propagators/compiler_2_gur_linked_list_test.clj`
 
 ## Status
 
@@ -145,6 +146,40 @@ For closure values, the closure application path:
 
 This is the boundary that prevents inner local variables from writing to outer
 cells except through the declared output/result.
+
+## Parallel GUR Linked-List Probe
+
+`test/propagators/compiler_2_gur_linked_list_test.clj` is a parallel experiment,
+not the active compiler-2 lowering. It keeps the existing compiler path intact
+and demonstrates the next target shape with GUR and public compound-object
+linked-list accessors.
+
+The test builds the declaration source as cells plus `obj/p:cons` /
+`obj/p:car` / `obj/p:cdr`:
+
+```clojure
+[:compound add-bias x + x bias]
+```
+
+It does not seed a materialized `subenv/cons-list-value` or read the source list
+back into Clojure data during compilation. A small GUR compiler closure walks
+that linked-list declaration through accessor topology, emits a GUR closure
+value, then applies that closure with `gur.subenv/p:apply-closure`.
+
+The compiled closure demonstrates lexical access without materializing the
+environment. Its body receives an accessor-backed env cell, installs
+`compiler-2.env/p:lexical-access` for `bias`, and composes the result with
+stdlib `prop/+`. The passing assertion is:
+
+```clojure
+((compiled-add-bias 5) with bias = 10) => 15
+```
+
+This proves the short path: linked-list declaration traversal, compound
+propagator declaration as a GUR closure value, GUR application, and accessor
+lexical lookup. It does not yet prove general compiler-2 lowering, dynamic AST
+operator dispatch, recursive construction of arbitrary lexical accessors, or
+replacement of the current materializing closure application path.
 
 ## Lexical Environments
 
