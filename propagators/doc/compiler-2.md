@@ -162,7 +162,8 @@ The test builds the declaration source as cells plus `obj/p:cons` /
 ```
 
 It does not seed a materialized `subenv/cons-list-value` or read the source list
-back into Clojure data during compilation. A small GUR compiler closure walks
+back into Clojure data during compilation. The experiment declarations use the
+existing `compile/def-recursive` source DSL: a small GUR compiler closure walks
 that linked-list declaration through accessor topology, emits a GUR closure
 value, then applies that closure with `gur.subenv/p:apply-closure`.
 

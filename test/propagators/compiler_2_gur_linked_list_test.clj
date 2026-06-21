@@ -1,6 +1,6 @@
 (ns propagators.compiler-2-gur-linked-list-test
   (:require [clojure.test :refer [deftest is testing]]
-            [propagators.cells.value :as value]
+            [propagators.compile :as compile]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.compiler-2.env :as env]
@@ -8,11 +8,13 @@
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]
             [propagators.network :as net]
-            [propagators.network-builder :as nb]
-            [propagators.stdlib.prop :as prop]))
+            [propagators.network-builder :as nb]))
 
 (defn- strongest [n id]
   (net/network-cell-strongest n id))
+
+(defn- local-strongest [frame sym]
+  (strongest frame (net/network-dict-entry frame sym)))
 
 (defn- run-props [n prop-ids]
   (core/run-tasks (tq/enqueue-all tq/empty-queue prop-ids) n))
@@ -48,50 +50,40 @@
     {:net (core/run-tasks tasks n3)
      :root-id (first colls)}))
 
-(defn- compiled-add-bias-closure []
-  (subenv/def-recursive
-   :compiler-2-gur-linked-list/add-bias
-   (fn [{:keys [network args out]}]
-     (let [[x-id env-id] args
-           bias-id (ids/new-node-id)
-           n0 (nb/install-cell network bias-id)
-           [lex-prop n1] ((env/p:lexical-access 'bias env-id bias-id) n0)
-           [add-prop n2] ((prop/+ x-id bias-id out) n1)]
-       {:net n2
-        :prop-ids [lex-prop add-prop]}))))
+(defn- bias-access
+  [env-id out-id]
+  (env/p:lexical-access 'bias env-id out-id))
 
-(defn- tiny-linked-list-compiler []
-  (subenv/def-recursive
-   :compiler-2-gur-linked-list/compiler
-   (fn [{:keys [network args out]}]
-     (let [[decl-id] args
-           [tag-id name-id param-id op-id left-id right-id
-            tail1-id tail2-id tail3-id tail4-id tail5-id] (repeatedly ids/new-node-id)
-           n0 (reduce nb/install-cell
-                      network
-                      [tag-id name-id param-id op-id left-id right-id
-                       tail1-id tail2-id tail3-id tail4-id tail5-id])
-           [[tag-prop cdr1-prop] n1] ((obj/p:cons tag-id tail1-id decl-id) n0)
-           [[name-prop cdr2-prop] n2] ((obj/p:cons name-id tail2-id tail1-id) n1)
-           [[param-prop cdr3-prop] n3] ((obj/p:cons param-id tail3-id tail2-id) n2)
-           [[op-prop cdr4-prop] n4] ((obj/p:cons op-id tail4-id tail3-id) n3)
-           [[left-prop cdr5-prop] n5] ((obj/p:cons left-id tail5-id tail4-id) n4)
-           [right-prop n6] ((obj/p:car right-id tail5-id) n5)
-           n7 (-> n6
-                  (nb/seed-cell out (compiled-add-bias-closure))
-                  (net/assoc-net-dict-entry ::tag tag-id)
-                  (net/assoc-net-dict-entry ::name name-id)
-                  (net/assoc-net-dict-entry ::param param-id)
-                  (net/assoc-net-dict-entry ::op op-id)
-                  (net/assoc-net-dict-entry ::left left-id)
-                  (net/assoc-net-dict-entry ::right right-id))]
-       {:net n7
-        :prop-ids [tag-prop cdr1-prop
-                   name-prop cdr2-prop
-                   param-prop cdr3-prop
-                   op-prop cdr4-prop
-                   left-prop cdr5-prop
-                   right-prop]}))))
+(defn- experiment-installers
+  [runtime]
+  (subenv/source-contextual-installers
+   (merge (compile/default-installers)
+          {'obj/p:car obj/p:car
+           'obj/p:cons obj/p:cons
+           'p:bias-access bias-access})
+   runtime))
+
+(compile/def-recursive add-bias
+  [x lexical-env out]
+  {:name :compiler-2-gur-linked-list/add-bias
+   :installers experiment-installers}
+  (let-cell [bias]
+    (p:bias-access lexical-env bias)
+    (:+ x bias)))
+
+(compile/def-recursive linked-list-compiler
+  [decl out]
+  {:name :compiler-2-gur-linked-list/compiler
+   :installers experiment-installers
+   :seed-values {compiled-add-bias add-bias}}
+  (let-cell [tag name param op left right tail1 tail2 tail3 tail4 tail5]
+    (obj/p:cons tag tail1 decl)
+    (obj/p:cons name tail2 tail1)
+    (obj/p:cons param tail3 tail2)
+    (obj/p:cons op tail4 tail3)
+    (obj/p:cons left tail5 tail4)
+    (obj/p:car right tail5)
+    compiled-add-bias))
 
 (deftest linked-list-gur-compiler-declares-applies-and-accesses-lexically
   (testing "parallel compiler-2/GUR experiment over accessor-linked AST, without source list materialization"
@@ -104,8 +96,8 @@
           out-id (ids/new-node-id)
           n0 (-> net
                  (nb/install-cell compiler-id
-                                  (tiny-linked-list-compiler)
-                                  (tiny-linked-list-compiler))
+                                  linked-list-compiler
+                                  linked-list-compiler)
                  (nb/install-cell compiled-id)
                  (nb/install-cell env-id
                                   (obj/as-accessor-network {'bias 10})
@@ -131,15 +123,9 @@
       (is (obj/accessor-network? (strongest n3 env-id)))
       (is (subenv/recursive-closure? (strongest n3 compiled-id)))
       (is (= 15 (strongest n3 out-id)))
-      (is (= :compound (strongest compiler-frame
-                                 (net/network-dict-entry compiler-frame ::tag))))
-      (is (= 'add-bias (strongest compiler-frame
-                                  (net/network-dict-entry compiler-frame ::name))))
-      (is (= 'x (strongest compiler-frame
-                           (net/network-dict-entry compiler-frame ::param))))
-      (is (= '+ (strongest compiler-frame
-                           (net/network-dict-entry compiler-frame ::op))))
-      (is (= 'x (strongest compiler-frame
-                           (net/network-dict-entry compiler-frame ::left))))
-      (is (= 'bias (strongest compiler-frame
-                              (net/network-dict-entry compiler-frame ::right)))))))
+      (is (= :compound (local-strongest compiler-frame 'tag)))
+      (is (= 'add-bias (local-strongest compiler-frame 'name)))
+      (is (= 'x (local-strongest compiler-frame 'param)))
+      (is (= '+ (local-strongest compiler-frame 'op)))
+      (is (= 'x (local-strongest compiler-frame 'left)))
+      (is (= 'bias (local-strongest compiler-frame 'right))))))
