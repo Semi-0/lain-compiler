@@ -64,7 +64,9 @@
         source-value (if (seq source-slots)
                        (obj/compound-object source-slots)
                        raw-value)
-        decls (obj/slot-declarations-for outer-net collection-id)]
+        decls (merge-with merge
+                          (obj/slot-declarations-for outer-net collection-id)
+                          (obj/accessor-declarations-for outer-net collection-id))]
     (if (empty? decls)
       source-value
       (let [base-value (obj/compound-object source-value)

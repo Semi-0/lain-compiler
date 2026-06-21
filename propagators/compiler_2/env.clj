@@ -144,6 +144,59 @@
 (defn lookup [env sym]
   (:value (lookup-entry env sym)))
 
+(defn- accessor-source-slot-content
+  [env-value sym]
+  (let [source-slots (when (obj/accessor-network? env-value)
+                       (obj/accessor-source-slots env-value))]
+    (cond
+      (contains? source-slots sym)
+      (get source-slots sym)
+
+      (obj/accessor-network? env-value)
+      (or (obj/slot-content env-value sym) value/nothing)
+
+      :else
+      value/nothing)))
+
+(defn lexical-slot-content
+  "Return one lexical env slot's content without resolving scoped candidates.
+
+  This deliberately returns the slot content, not its strongest view, so a
+  receiving cell can keep all scope-source candidates and choose strongest via
+  the network-local cell protocol.
+  "
+  [env-value sym]
+  (cond
+    (value/nothing? env-value)
+    value/nothing
+
+    (value/contradiction? env-value)
+    value/contradiction
+
+    (obj/accessor-network? env-value)
+    (accessor-source-slot-content env-value sym)
+
+    :else
+    (or (obj/slot-content env-value sym) value/nothing)))
+
+(defn p:lexical-access
+  "Copy one env slot's scoped candidate content into `out-id`.
+
+  The propagator does not resolve lexical shadowing. The output cell receives
+  scope-source content and relies on `install-scope-source-protocol` for merge
+  and strongest selection.
+  "
+  [sym env-id out-id]
+  (prop/construct-propagator
+   (fn [_inputs _outputs network]
+     (let [env-value (net/network-cell-strongest network env-id)
+           slot-content (lexical-slot-content env-value sym)]
+       (if (value/nothing? slot-content)
+         []
+         [(message out-id slot-content)])))
+   [env-id]
+   [out-id]))
+
 (defn binding-id [x]
   (cond
     (ids/node-id? x) x
