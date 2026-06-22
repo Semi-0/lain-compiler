@@ -502,7 +502,7 @@
         rerun-acc-net (strongest stable-net (:applied-net-id result))]
     (is (= 10 (:value result)))
     (is (= 10 (strongest rerun-net (:out-id result))))
-    (is (= 2 count-after-rerun))
+    (is (= 1 count-after-rerun))
     (is (= 10 (strongest stable-net (:out-id result))))
     (is (= count-after-rerun count-after-stable))
     (is (nil? (net/network-dict-entry (:acc-net result) queue/child-queue-key)))
