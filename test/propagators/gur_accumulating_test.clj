@@ -8,6 +8,7 @@
             [propagators.datastructures.compound-object :as obj]
             [propagators.gur.accumulating :as acc]
             [propagators.gur.subenv :as subenv]
+            [propagators.gur.subenv.queue :as queue]
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
@@ -173,6 +174,26 @@
   {:installers example-installers}
   (::* value 2))
 
+(def counted-double-runs (atom 0))
+
+(def p:counted-double
+  (prop/primitive-propagator
+   (fn [v]
+     (swap! counted-double-runs inc)
+     (* v 2))))
+
+(defn- counted-installers
+  [runtime]
+  (acc/contextual-installers
+   (merge (compile/default-installers)
+          {'p:counted-double p:counted-double})
+   runtime))
+
+(acc/def-recursive counted-double-value
+  [value out]
+  {:installers counted-installers}
+  (::counted-double value))
+
 (acc/def-recursive filter-list
   [list predicate acc-list out]
   {:installers example-installers}
@@ -330,28 +351,49 @@
         result (run-closure map-list [source map-list-fib unused-acc-list])]
     (is (= [[0 1] [1 2]] (list->data (:value result))))))
 
+(defn- pcons-list-source
+  [n values terminal-value]
+  (let [values (vec values)
+        len (count values)
+        heads (vec (repeatedly len ids/new-node-id))
+        colls (vec (repeatedly len ids/new-node-id))
+        terminal-id (ids/new-node-id)
+        n0 (reduce nb/install-cell n (conj (into heads colls) terminal-id))]
+    (reduce
+     (fn [{:keys [net prop-ids] :as acc} i]
+       (let [[ids n'] ((obj/p:cons (heads i)
+                                   (if (= i (dec len))
+                                     terminal-id
+                                     (colls (inc i)))
+                                   (colls i))
+                       net)]
+         (assoc acc :net n' :prop-ids (into prop-ids ids))))
+     {:net n0
+      :prop-ids []
+      :root-id (first colls)
+      :seeds (conj (mapv vector heads values)
+                   [terminal-id terminal-value])}
+     (range len))))
+
 (defn- run-list-hop-chain
   ([operator mapper values depth]
-   (run-list-hop-chain operator mapper values depth subenv/cons-list-value))
-  ([operator mapper values depth source-list]
-   (run-list-hop-chain operator mapper values depth source-list unused-acc-list))
-  ([operator mapper values depth source-list acc-value]
+   (run-list-hop-chain operator mapper values depth value/nothing))
+  ([operator mapper values depth terminal-value]
+   (run-list-hop-chain operator mapper values depth terminal-value unused-acc-list))
+  ([operator mapper values depth terminal-value acc-value]
    (let [op-id (ids/new-node-id)
         mapper-id (ids/new-node-id)
         acc-id (ids/new-node-id)
-        source-id (ids/new-node-id)
         out-ids (vec (repeatedly depth ids/new-node-id))
         n0 (-> net/empty-net
                (nb/install-cell op-id operator operator)
                (nb/install-cell mapper-id mapper mapper)
-               (nb/install-cell acc-id acc-value acc-value)
-               (nb/install-cell source-id
-                                (source-list values)
-                                (source-list values)))
-        n1 (reduce nb/install-cell n0 out-ids)
+               (nb/install-cell acc-id acc-value acc-value))
+        {:keys [net prop-ids root-id seeds]} (pcons-list-source n0 values terminal-value)
+        n1 (reduce nb/install-cell net out-ids)
         [props n2]
         (reduce (fn [[props n] i]
-                  (let [in-id (if (zero? i) source-id (out-ids (dec i)))
+                  (let [in-id (if (zero? i) root-id (out-ids (dec i)))
                         out-id (out-ids i)
                         [ids n'] ((acc/p:apply-closure op-id
                                                        [in-id mapper-id acc-id]
@@ -360,7 +402,12 @@
                     [(into props ids) n']))
                 [[] n1]
                 (range depth))
-        n3 (run-props n2 props)]
+        [n3 tasks] (reduce (fn [[n tasks] [id v]]
+                             (nb/seed-cell! n tasks id v))
+                           [n2 (tq/enqueue-all tq/empty-queue
+                                               (into prop-ids props))]
+                           seeds)
+        n3 (core/run-tasks tasks n3)]
     {:net n3
      :out-id (peek out-ids)
      :value (strongest n3 (peek out-ids))})))
@@ -370,11 +417,10 @@
          (list->vec (:value (run-list-hop-chain map-list
                                                 double-value
                                                 [1 1 1 1 1]
-                                                1
-                                                lazy-cons-list-value))))))
+                                                1))))))
 
 (deftest accumulating-gur-hop-output-stores-scoped-slot-participants
-  (let [result (run-list-hop-chain map-list double-value [1 1 1 1 1] 1 lazy-cons-list-value)
+  (let [result (run-list-hop-chain map-list double-value [1 1 1 1 1] 1)
         output (:value result)
         parents (mapcat #(obj/accessor-parent-ids output %)
                         (obj/accessor-slot-keys output))
@@ -384,7 +430,7 @@
     (is (not-any? #(contains? (net/net-env (:net result)) %) scoped-parents))))
 
 (deftest accumulating-gur-hop-output-cdr-update-is-bidirectional
-  (let [result (run-list-hop-chain map-list double-value [1] 1 lazy-cons-list-value)
+  (let [result (run-list-hop-chain map-list double-value [1] 1)
         tail-id (ids/new-node-id)
         n0 (nb/install-cell (:net result) tail-id)
         [slot-prop n1] ((obj/p:network-cdr tail-id (:out-id result)) n0)
@@ -404,8 +450,7 @@
              (list->vec (:value (run-list-hop-chain map-list
                                                     double-value
                                                     [1 1 1 1 1]
-                                                    depth
-                                                    lazy-cons-list-value))))
+                                                    depth))))
           (str "mapper chain depth " depth))))
   (testing "filter chains keep the existing empty-list accumulator"
     (doseq [depth [5 10]]
@@ -414,7 +459,7 @@
                                                     even-predicate
                                                     [1 2 3 4 5 6]
                                                     depth
-                                                    subenv/cons-list-value
+                                                    subenv/empty-list
                                                     subenv/empty-list))))
           (str "filter chain depth " depth)))))
 
@@ -446,6 +491,25 @@
     (is (pos? (:props stats)))
     (is (= 0 (:nested-frame-nets stats)))
     (is (= stats stats*))))
+
+(deftest accumulating-gur-ran-task-state-is-primitive-local
+  (reset! counted-double-runs 0)
+  (let [result (run-closure counted-double-value [5])
+        rerun-net (run-props (:net result) (:props result))
+        count-after-rerun @counted-double-runs
+        stable-net (run-props rerun-net (:props result))
+        count-after-stable @counted-double-runs
+        rerun-acc-net (strongest stable-net (:applied-net-id result))]
+    (is (= 10 (:value result)))
+    (is (= 10 (strongest rerun-net (:out-id result))))
+    (is (= 2 count-after-rerun))
+    (is (= 10 (strongest stable-net (:out-id result))))
+    (is (= count-after-rerun count-after-stable))
+    (is (nil? (net/network-dict-entry (:acc-net result) queue/child-queue-key)))
+    (is (nil? (net/network-dict-entry rerun-acc-net queue/child-queue-key)))
+    (is (seq (net/network-dict-entry rerun-acc-net acc/task-index-key)))
+    (is (not (re-find #":(cursor|pending|ran|scheduled)"
+                      (pr-str (net/net-dict-or-empty rerun-acc-net)))))))
 
 (defn- dispatch-route-value
   [network route]
