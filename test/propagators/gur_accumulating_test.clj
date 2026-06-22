@@ -1,5 +1,6 @@
 (ns propagators.gur-accumulating-test
   (:require [clojure.test :refer [deftest is testing]]
+            [propagators.cells.merge :as merge]
             [propagators.cells.value :as value]
             [propagators.compile :as compile]
             [propagators.compiler-2.env :as compiler-env]
@@ -47,6 +48,19 @@
   (value-predicate
    (fn [v]
      (if (integer? v) (even? v) value/contradiction))))
+
+(defn- lazy-cons-cell-value
+  [head tail]
+  (obj/as-accessor-network {:car head :cdr tail}))
+
+(defn- lazy-cons-list-value
+  [values]
+  (reduce (fn [tail head]
+            (lazy-cons-cell-value head tail))
+          value/nothing
+          (reverse values)))
+
+(def unused-acc-list ::unused-acc-list)
 
 (defn- example-installers
   [runtime]
@@ -110,31 +124,21 @@
 (acc/def-recursive map-list
   [list mapper acc-list out]
   {:installers example-installers}
-  (let-cell [head rest]
-    (let [list-empty? (::empty-list? list)
-          list-more? (::not list-empty?)
-          node (switch list-more? list)]
-      (obj/p:car head node)
-      (obj/p:cdr rest node)
+  (let-cell [head rest mapped-rest]
+    (obj/p:car head list)
+    (obj/p:cdr rest list)
       (let [mapped (::apply mapper head)
-            rest-empty? (::empty-list? rest)
-            rest-more? (::not rest-empty?)
-            mapped-rest (cond
-                          rest-empty? acc-list
-                          rest-more? (::recur (switch rest-more? rest)
-                                              mapper
-                                              acc-list))
             mapped-node (::cons mapped mapped-rest)]
-        (cond
-          list-empty? acc-list
-          list-more? mapped-node)))))
+      (when rest
+        (p:id (::recur rest mapper acc-list) mapped-rest))
+      mapped-node)))
 
 (acc/def-recursive map-list-fib
   [list out]
   {:installers example-installers
    :seed-values {map-list map-list
                  fib fib
-                 acc-list subenv/empty-list}}
+                 acc-list unused-acc-list}}
   (::apply map-list list fib acc-list))
 
 (acc/def-recursive sum-step
@@ -307,7 +311,7 @@
   (testing "compound list cases use accessor values and bounded assertion readers"
     (is (= [0 1 1 2 3 5]
            (list->vec (:value (run-closure map-list-fib
-                                           [(subenv/cons-list-value
+                                           [(lazy-cons-list-value
                                              [0 1 2 3 4 5])])))))
     (is (= 15 (:value (run-closure reduce-list
                                     [(subenv/cons-list-value [1 2 3 4 5])
@@ -321,14 +325,18 @@
                                             subenv/empty-list])))))))
 
 (deftest accumulating-gur-computes-nested-map-list
-  (let [source (subenv/cons-list-value [(subenv/cons-list-value [0 1])
-                                        (subenv/cons-list-value [2 3])])
-        result (run-closure map-list [source map-list-fib subenv/empty-list])]
+  (let [source (lazy-cons-list-value [(lazy-cons-list-value [0 1])
+                                      (lazy-cons-list-value [2 3])])
+        result (run-closure map-list [source map-list-fib unused-acc-list])]
     (is (= [[0 1] [1 2]] (list->data (:value result))))))
 
 (defn- run-list-hop-chain
-  [operator mapper values depth]
-  (let [op-id (ids/new-node-id)
+  ([operator mapper values depth]
+   (run-list-hop-chain operator mapper values depth subenv/cons-list-value))
+  ([operator mapper values depth source-list]
+   (run-list-hop-chain operator mapper values depth source-list unused-acc-list))
+  ([operator mapper values depth source-list acc-value]
+   (let [op-id (ids/new-node-id)
         mapper-id (ids/new-node-id)
         acc-id (ids/new-node-id)
         source-id (ids/new-node-id)
@@ -336,10 +344,10 @@
         n0 (-> net/empty-net
                (nb/install-cell op-id operator operator)
                (nb/install-cell mapper-id mapper mapper)
-               (nb/install-cell acc-id subenv/empty-list subenv/empty-list)
+               (nb/install-cell acc-id acc-value acc-value)
                (nb/install-cell source-id
-                                (subenv/cons-list-value values)
-                                (subenv/cons-list-value values)))
+                                (source-list values)
+                                (source-list values)))
         n1 (reduce nb/install-cell n0 out-ids)
         [props n2]
         (reduce (fn [[props n] i]
@@ -355,17 +363,18 @@
         n3 (run-props n2 props)]
     {:net n3
      :out-id (peek out-ids)
-     :value (strongest n3 (peek out-ids))}))
+     :value (strongest n3 (peek out-ids))})))
 
 (deftest accumulating-gur-one-map-hop-works
   (is (= [2 2 2 2 2]
          (list->vec (:value (run-list-hop-chain map-list
                                                 double-value
                                                 [1 1 1 1 1]
-                                                1))))))
+                                                1
+                                                lazy-cons-list-value))))))
 
 (deftest accumulating-gur-hop-output-stores-scoped-slot-participants
-  (let [result (run-list-hop-chain map-list double-value [1 1 1 1 1] 1)
+  (let [result (run-list-hop-chain map-list double-value [1 1 1 1 1] 1 lazy-cons-list-value)
         output (:value result)
         parents (mapcat #(obj/accessor-parent-ids output %)
                         (obj/accessor-slot-keys output))
@@ -375,7 +384,7 @@
     (is (not-any? #(contains? (net/net-env (:net result)) %) scoped-parents))))
 
 (deftest accumulating-gur-hop-output-cdr-update-is-bidirectional
-  (let [result (run-list-hop-chain map-list double-value [1] 1)
+  (let [result (run-list-hop-chain map-list double-value [1] 1 lazy-cons-list-value)
         tail-id (ids/new-node-id)
         n0 (nb/install-cell (:net result) tail-id)
         [slot-prop n1] ((obj/p:network-cdr tail-id (:out-id result)) n0)
@@ -388,23 +397,40 @@
         n5 (run-props n4 [slot-prop])]
     (is (= [2 9] (list->vec (strongest n5 (:out-id result)))))))
 
-(deftest accumulating-gur-hop-chain-known-gap
-  (testing "same-parent chains still expose the inter-owner tail handoff gap"
-    ;; ponytail: this is a regression pin for the design gap, not a success test.
+(deftest accumulating-gur-hop-chain-parity
+  (testing "same-parent mapper chains traverse lazy linked lists"
     (doseq [depth [5 10 15]]
-      (is (not= (repeat 5 (long (Math/pow 2 depth)))
-                (list->vec (:value (run-list-hop-chain map-list
-                                                       double-value
-                                                       [1 1 1 1 1]
-                                                       depth))))
-          (str "mapper chain depth " depth " is not parity yet")))
+      (is (= (repeat 5 (long (Math/pow 2 depth)))
+             (list->vec (:value (run-list-hop-chain map-list
+                                                    double-value
+                                                    [1 1 1 1 1]
+                                                    depth
+                                                    lazy-cons-list-value))))
+          (str "mapper chain depth " depth))))
+  (testing "filter chains keep the existing empty-list accumulator"
     (doseq [depth [5 10]]
-      (is (not= [2 4 6]
+      (is (= [2 4 6]
              (list->vec (:value (run-list-hop-chain filter-list
                                                     even-predicate
                                                     [1 2 3 4 5 6]
-                                                    depth))))
-          (str "filter chain depth " depth " is not parity yet")))))
+                                                    depth
+                                                    subenv/cons-list-value
+                                                    subenv/empty-list))))
+          (str "filter chain depth " depth)))))
+
+(deftest accumulating-gur-topology-only-tail-remains-legacy-list-shape-gap
+  (let [parent (scoped/name-ref [:debug/frame] :tail)
+        topology-only-empty (-> subenv/empty-list
+                                (merge/cell-merge
+                                 (obj/accessor-declaration :car parent)
+                                 net/empty-net)
+                                (merge/cell-merge
+                                 (obj/accessor-declaration :cdr parent)
+                                 net/empty-net))]
+    (is (empty? (obj/accessor-source-slots topology-only-empty)))
+    (is (= #{:car :cdr} (obj/accessor-slot-keys topology-only-empty)))
+    (is (false? (subenv/empty-list? topology-only-empty))
+        "Known gap: topology-only slot declarations currently count as list shape.")))
 
 (deftest accumulating-gur-uses-one-owner-and-is-idempotent
   (let [result (run-closure fib [5])
@@ -446,16 +472,16 @@
 
 (deftest accumulating-gur-routes-late-cdr-through-one-owner
   (testing "late cdr update enters the accumulated net through scoped dispatch"
-    (let [initial-list (subenv/cons-cell-value 0 value/nothing)
+    (let [initial-list (lazy-cons-cell-value 0 value/nothing)
           result (run-closure map-list
-                              [initial-list fib subenv/empty-list])
+                              [initial-list fib unused-acc-list])
           target (rest-target-with-nothing (:net result)
                                            (:applied-net-id result))]
       (is (= [0] (list->vec (:value result))))
       (is (some? target))
       (let [[tasks n1] (core/eval-cell* (net/net-dict-or-empty (:net result))
                                         (message target
-                                                 (subenv/cons-list-value [1 2]))
+                                                 (lazy-cons-list-value [1 2]))
                                         (:net result))
             n2 (core/run-tasks tasks n1)]
         (is (= [0 1 1] (list->vec (strongest n2 (:out-id result)))))
