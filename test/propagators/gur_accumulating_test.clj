@@ -374,6 +374,20 @@
     (is (seq scoped-parents))
     (is (not-any? #(contains? (net/net-env (:net result)) %) scoped-parents))))
 
+(deftest accumulating-gur-hop-output-cdr-update-is-bidirectional
+  (let [result (run-list-hop-chain map-list double-value [1] 1)
+        tail-id (ids/new-node-id)
+        n0 (nb/install-cell (:net result) tail-id)
+        [slot-prop n1] ((obj/p:network-cdr tail-id (:out-id result)) n0)
+        n2 (run-props n1 [slot-prop])
+        [tasks n3] (core/eval-cell tail-id
+                                    (message tail-id
+                                             (subenv/cons-list-value [9]))
+                                    n2)
+        n4 (core/run-tasks tasks n3)
+        n5 (run-props n4 [slot-prop])]
+    (is (= [2 9] (list->vec (strongest n5 (:out-id result)))))))
+
 (deftest accumulating-gur-hop-chain-known-gap
   (testing "same-parent chains still expose the inter-owner tail handoff gap"
     ;; ponytail: this is a regression pin for the design gap, not a success test.
