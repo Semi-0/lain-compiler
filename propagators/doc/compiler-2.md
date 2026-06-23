@@ -201,6 +201,14 @@ whose source is not in the active chain are retained but not selected.
 `scope-source` is only lexical lookup metadata. It does not carry arithmetic
 provenance or dependency information.
 
+`compiler-2.env/p:lexical-access` keeps recursive accessor traversal separate
+from lexical choice. It installs `obj/p:slot` into an intermediate slot cell,
+then a small transfer propagator copies the accumulated slot content into the
+lexical output cell, where the `scope-source` protocol performs strongest
+selection. The transfer still falls back to the raw env slot when the accessor
+cell is empty, because current accessor slots do not expose non-ancestor
+scope-source candidates as content.
+
 ## Dependency Arithmetic
 
 `helpers/default-env` remains raw and compatible. For example:

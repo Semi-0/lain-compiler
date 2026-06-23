@@ -13,6 +13,7 @@
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
+            [propagators.network-builder :as nb]
             [propagators.propagator :as prop]))
 
 (def env-depth-key :env/depth)
@@ -187,15 +188,28 @@
   and strongest selection.
   "
   [sym env-id out-id]
-  (prop/construct-propagator
-   (fn [_inputs _outputs network]
-     (let [env-value (net/network-cell-strongest network env-id)
-           slot-content (lexical-slot-content env-value sym)]
-       (if (value/nothing? slot-content)
-         []
-         [(message out-id slot-content)])))
-   [env-id]
-   [out-id]))
+  (let [slot-id (ids/new-node-id)]
+    (fn [network]
+      (let [n0 (nb/ensure-cell network slot-id)
+            [slot-prop n1] ((obj/p:slot sym slot-id env-id) n0)
+            [transfer-prop n2]
+            ((prop/construct-propagator
+              (fn [_inputs _outputs network]
+                (let [slot-content (net/network-cell-content network slot-id)
+                      content (if (value/nothing? slot-content)
+                                (lexical-slot-content
+                                 (net/network-cell-strongest network env-id)
+                                 sym)
+                                slot-content)]
+                  ;; ponytail: p:slot owns recursive access; raw env fallback
+                  ;; keeps non-ancestor scope candidates as content.
+                  (if (value/nothing? content)
+                    []
+                    [(message out-id content)])))
+              [env-id slot-id]
+              [out-id])
+             n1)]
+        [[slot-prop transfer-prop] n2]))))
 
 (defn binding-id [x]
   (cond
