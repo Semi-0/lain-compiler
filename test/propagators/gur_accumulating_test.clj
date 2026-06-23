@@ -8,6 +8,7 @@
             [propagators.datastructures.compound-object :as obj]
             [propagators.gur.accumulating :as acc]
             [propagators.gur.subenv :as subenv]
+            [propagators.gur.subenv.env :as gur-env]
             [propagators.gur.subenv.queue :as queue]
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]
@@ -142,6 +143,20 @@
                  acc-list unused-acc-list}}
   (::apply map-list list fib acc-list))
 
+(acc/def-recursive relational-id-map-list
+  [list out]
+  {:installers example-installers}
+  (let-cell [head rest mapped-head mapped-rest]
+    (obj/p:car head list)
+    (obj/p:cdr rest list)
+    (obj/p:car mapped-head out)
+    (obj/p:cdr mapped-rest out)
+    (p:id head mapped-head)
+    (p:id mapped-head head)
+    (when rest
+      (p:id (::recur rest) mapped-rest))
+    out))
+
 (acc/def-recursive sum-step
   [acc-list value out]
   {:installers example-installers}
@@ -173,6 +188,49 @@
   [value out]
   {:installers example-installers}
   (::* value 2))
+
+(acc/def-recursive bidirectional-double-value
+  [value out]
+  {:installers example-installers
+   :bidirectional? true}
+  (let [two 2]
+    (p:id (:/ out two) value)
+    (::* value two)))
+
+(acc/def-recursive bidirectional-id
+  [value out]
+  {:installers example-installers
+   :bidirectional? true}
+  (do
+    (p:id out value)
+    value))
+
+(defn- scope-object-installers
+  [runtime]
+  (acc/contextual-installers
+   (merge (compile/default-installers)
+          {'p:scope-x (fn [& ids]
+                        (let [out-id (or (last ids) (ids/new-node-id))]
+                          (fn [n]
+                            (let [n0 (gur-env/bind-in-scope-object n
+                                                                    (:scope runtime)
+                                                                    'x
+                                                                    (first (:args runtime)))
+                                  bind-props (gur-env/scope-object-prop-ids n0)
+                                  [access-prop n1]
+                                  ((gur-env/p:scope-object-access (:scope runtime)
+                                                                  'x
+                                                                  out-id)
+                                   (nb/ensure-cell n0 out-id))]
+                              [(vec (conj bind-props access-prop)) n1]))))})
+   runtime))
+
+(acc/def-recursive scope-object-echo-x
+  [x out]
+  {:installers scope-object-installers}
+  (let-cell [scope-x]
+    (p:scope-x scope-x)
+    scope-x))
 
 (def counted-double-runs (atom 0))
 
@@ -351,6 +409,15 @@
         result (run-closure map-list [source map-list-fib unused-acc-list])]
     (is (= [[0 1] [1 2]] (list->data (:value result))))))
 
+(deftest accumulating-gur-can-read-frame-binding-through-compound-scope
+  (let [result (run-closure scope-object-echo-x [42])
+        scope-objects (net/network-dict-entry (:acc-net result)
+                                              gur-env/scope-object-key)]
+    (is (= 42 (:value result)))
+    (is (seq scope-objects))
+    (is (every? #(obj/accessor-network? (strongest (:acc-net result) %))
+                (vals scope-objects)))))
+
 (defn- pcons-list-source
   [n values terminal-value]
   (let [values (vec values)
@@ -442,6 +509,117 @@
         n4 (core/run-tasks tasks n3)
         n5 (run-props n4 [slot-prop])]
     (is (= [2 9] (list->vec (strongest n5 (:out-id result)))))))
+
+(defn- one-node-unseeded-hop
+  [closure arg-cells]
+  (let [closure-id (ids/new-node-id)
+        head-id (ids/new-node-id)
+        terminal-id (ids/new-node-id)
+        source-id (ids/new-node-id)
+        out-id (ids/new-node-id)
+        out-head-id (ids/new-node-id)
+        arg-ids (mapv first arg-cells)
+        n0 (-> net/empty-net
+               (nb/install-cell closure-id closure closure)
+               (#(reduce nb/install-cell
+                          %
+                          [head-id terminal-id source-id out-id out-head-id]))
+               (#(reduce (fn [n [id v]]
+                            (nb/install-cell n id v v))
+                          %
+                          arg-cells)))
+        [cons-props n1] ((obj/p:cons head-id terminal-id source-id) n0)
+        [apply-props n2] ((acc/p:apply-closure closure-id
+                                               (into [source-id] arg-ids)
+                                               out-id)
+                          n1)
+        n3 (core/run-tasks (tq/enqueue-all tq/empty-queue
+                                           (into cons-props apply-props))
+                           n2)
+        [out-car-prop n4] ((obj/p:car out-head-id out-id) n3)
+        n5 (run-props n4 [out-car-prop])
+        [tasks n6] (core/eval-cell out-head-id
+                                    (message out-head-id 9)
+                                    n5)
+        n7 (core/run-tasks tasks n6)
+        n8 (run-props n7 (into apply-props [out-car-prop]))]
+    {:net n8
+     :head-id head-id
+     :out-id out-id}))
+
+(deftest accumulating-gur-closure-mapper-output-car-flows-to-input
+  (let [mapper-id (ids/new-node-id)
+        acc-id (ids/new-node-id)
+        {:keys [net head-id out-id]}
+        (one-node-unseeded-hop map-list
+                               [[mapper-id bidirectional-id]
+                                [acc-id unused-acc-list]])]
+    (is (= 9 (strongest net head-id)))
+    (is (= [9] (take 1 (list->vec (strongest net out-id)))))))
+
+(deftest accumulating-gur-relational-map-list-output-car-flows-to-input
+  (let [{:keys [net head-id out-id]} (one-node-unseeded-hop relational-id-map-list [])]
+    (is (= 9 (strongest net head-id)))
+    (is (= [9] (take 1 (list->vec (strongest net out-id)))))))
+
+(defn- unseeded-hop-chain-output-write
+  ([depth]
+   (unseeded-hop-chain-output-write depth bidirectional-id 9))
+  ([depth mapper output-value]
+  (let [op-id (ids/new-node-id)
+        mapper-id (ids/new-node-id)
+        acc-id (ids/new-node-id)
+        head-id (ids/new-node-id)
+        terminal-id (ids/new-node-id)
+        source-id (ids/new-node-id)
+        out-ids (vec (repeatedly depth ids/new-node-id))
+        out-head-id (ids/new-node-id)
+        n0 (-> net/empty-net
+               (nb/install-cell op-id map-list map-list)
+               (nb/install-cell mapper-id mapper mapper)
+               (nb/install-cell acc-id unused-acc-list unused-acc-list)
+               (#(reduce nb/install-cell
+                          %
+                          (concat [head-id terminal-id source-id out-head-id]
+                                  out-ids))))
+        [cons-props n1] ((obj/p:cons head-id terminal-id source-id) n0)
+        [apply-props n2]
+        (reduce (fn [[props n] i]
+                  (let [in-id (if (zero? i) source-id (out-ids (dec i)))
+                        out-id (out-ids i)
+                        [ids n'] ((acc/p:apply-closure op-id
+                                                       [in-id mapper-id acc-id]
+                                                       out-id)
+                                  n)]
+                    [(into props ids) n']))
+                [[] n1]
+                (range depth))
+        n3 (core/run-tasks (tq/enqueue-all tq/empty-queue
+                                           (into cons-props apply-props))
+                           n2)
+        [out-car-prop n4] ((obj/p:car out-head-id (peek out-ids)) n3)
+        n5 (run-props n4 [out-car-prop])
+        [tasks n6] (core/eval-cell out-head-id
+                                    (message out-head-id output-value)
+                                    n5)
+        n7 (core/run-tasks tasks n6)
+        n8 (run-props n7 (into apply-props [out-car-prop]))]
+    {:net n8
+     :head-id head-id
+     :out-id (peek out-ids)})))
+
+(deftest accumulating-gur-bidirectional-mapper-chain-output-car-flows-to-source
+  (doseq [depth [2 5]]
+    (let [{:keys [net head-id out-id]} (unseeded-hop-chain-output-write depth)]
+      (is (= 9 (strongest net head-id)) (str "depth " depth))
+      (is (= [9] (take 1 (list->vec (strongest net out-id))))
+          (str "depth " depth)))))
+
+(deftest accumulating-gur-bidirectional-arithmetic-mapper-chain-output-car-flows-to-source
+  (let [{:keys [net head-id out-id]}
+        (unseeded-hop-chain-output-write 5 bidirectional-double-value 32)]
+    (is (= 1 (strongest net head-id)))
+    (is (= [32] (take 1 (list->vec (strongest net out-id)))))))
 
 (deftest accumulating-gur-hop-chain-parity
   (testing "same-parent mapper chains traverse lazy linked lists"
