@@ -762,6 +762,59 @@
       (is (= [0 1] (list->vec (strongest n6 out-id))))
       (is (= [0 1] (list->vec (strongest n7 out-id)))))))
 
+(defn- strict-pcons-late-cdr-chain-result
+  [depth]
+  (let [op-id (ids/new-node-id)
+        mapper-id (ids/new-node-id)
+        acc-id (ids/new-node-id)
+        source-id (ids/new-node-id)
+        head0-id (ids/new-node-id)
+        tail0-id (ids/new-node-id)
+        out-ids (vec (repeatedly depth ids/new-node-id))
+        n0 (-> net/empty-net
+               (nb/install-cell op-id map-list map-list)
+               (nb/install-cell mapper-id double-value double-value)
+               (nb/install-cell acc-id unused-acc-list unused-acc-list)
+               (nb/install-cell source-id)
+               (nb/install-cell head0-id 1 1)
+               (nb/install-cell tail0-id))
+        [cons0-props n1] ((obj/p:cons head0-id tail0-id source-id) n0)
+        [apply-props n2]
+        (reduce (fn [[props n] i]
+                  (let [in-id (if (zero? i) source-id (out-ids (dec i)))
+                        out-id (out-ids i)
+                        [ids n'] ((acc/p:apply-closure op-id
+                                                       [in-id mapper-id acc-id]
+                                                       out-id)
+                                  n)]
+                    [(into props ids) n']))
+                [[] n1]
+                (range depth))
+        n3 (run-props n2 (concat cons0-props apply-props))
+        head1-id (ids/new-node-id)
+        tail1-id (ids/new-node-id)
+        n4 (-> n3
+               (nb/install-cell head1-id 1 1)
+               (nb/install-cell tail1-id value/nothing value/nothing))
+        [cons1-props n5] ((obj/p:cons head1-id tail1-id tail0-id) n4)
+        n6 (run-props n5 cons1-props)
+        n7 (run-props n6 apply-props)
+        out-id (peek out-ids)]
+    {:initial (list->vec (strongest n3 out-id))
+     :after-cons-only (list->vec (strongest n6 out-id))
+     :after-rerun-apply (list->vec (strongest n7 out-id))}))
+
+(deftest accumulating-gur-strict-pcons-late-cdr-propagates-through-hop-chain
+  (testing "late source-tail attachment wakes chained accumulating HOP applications"
+    (doseq [depth [1 2 5 10]]
+      (let [{:keys [initial after-cons-only after-rerun-apply]}
+            (strict-pcons-late-cdr-chain-result depth)
+            expected-single [(long (Math/pow 2 depth))]
+            expected-double (vec (repeat 2 (long (Math/pow 2 depth))))]
+        (is (= expected-single initial))
+        (is (= expected-double after-cons-only))
+        (is (= expected-double after-rerun-apply))))))
+
 (defn- install-cons! [n tasks head-id tail-id coll-id]
   (let [[prop-ids n'] ((obj/p:cons head-id tail-id coll-id) n)]
     [n' (tq/enqueue-all tasks prop-ids)]))
