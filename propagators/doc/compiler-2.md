@@ -182,6 +182,25 @@ lexical lookup. It does not yet prove general compiler-2 lowering, dynamic AST
 operator dispatch, recursive construction of arbitrary lexical accessors, or
 replacement of the current materializing closure application path.
 
+## Prototype Readiness
+
+The current system is good enough to continue building compiler-2 as a
+prototype on top of accumulating GUR, with a narrow target. GUR should be used
+for recursive compiler machinery: walking linked-list/AST declarations through
+`obj/p:cons` / `obj/p:car` / `obj/p:cdr`, constructing recursive lexical
+accessors, expanding macro-like declarations, and declaring higher-order
+compiler topology. Ordinary compiled programs should still prefer primitive
+propagators, iterative behavior operators, explicit behavior reducers, and
+retained application/closure data.
+
+The prototype boundary is still real. Compiler-2 should not yet assume a final
+general recursion substrate for all user code, automatic GC of accumulated GUR
+frames, dynamic dispatch over arbitrary AST operators, or removal of the current
+closure-application materialization bridge. Those are migration targets. The
+safe next step is to incrementally replace hard-coded compiler-2 probes with
+GUR-backed declaration traversal and lexical accessor construction while keeping
+existing compiler behavior green.
+
 ## Lexical Environments
 
 Environments are compound objects. Each symbol slot stores a scope-source

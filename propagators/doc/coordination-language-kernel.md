@@ -95,6 +95,39 @@ Out of scope for the minimal kernel:
 - projection logic hidden in ad hoc readers that bypass declared topology
 - unbounded recursive expansion as a scheduler feature
 
+## User-Facing Framing
+
+Most coordination-language programs should not start with GUR. The default user
+model should be plain primitive propagators, iterative operators, behavior
+reducers, explicit slots, and ordinary application data. Those constructs are
+easier to inspect and should cover routine IO-shaped coordination, behavior
+transforms, retained histories, and small derived views.
+
+GUR is the power-user layer. It is appropriate when a program needs to declare
+or compile recursive topology: macro expansion, compiler construction,
+recursive AST or linked-list traversal, recursively constructed lexical
+accessors, and higher-order operators that need unbounded but idempotent network
+declaration. In that role GUR must be fast enough to keep compiler-scale
+prototype work practical, but it does not need to become the lifecycle manager
+for the whole language.
+
+This also sets the GC expectation. Accumulating GUR may retain monotone frame
+and task facts for now; garbage collection is not the first prototype
+requirement. What is required is idempotence: re-running the same recursive
+application must not grow equivalent frames, routes, props, sync topology, or
+task facts forever. Versioning and retention for behavior reactivity should
+belong to behavior-aware propagators and behavior cell merge, not to generic GUR
+application keys.
+
+The same relaxation applies to compound data. Compound objects should own
+structural coordination: slots, accessors, bidirectional structural sync,
+linked-list/AST shape, and nested topology. They should be able to carry richer
+partial-information values, including behavior histories and future TMS-backed
+values, without collapsing those values to a base/strongest projection. They do
+not need to be the implementation substrate for behavior reactivity or TMS.
+Behavior owns time/version retention; a future TMS owns support, justification,
+and retraction policy.
+
 ## What To Do
 
 Prefer declaration over procedural control. If a feature needs more structure,
