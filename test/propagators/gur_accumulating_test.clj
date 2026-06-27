@@ -191,16 +191,14 @@
 
 (acc/def-recursive bidirectional-double-value
   [value out]
-  {:installers example-installers
-   :bidirectional? true}
+  {:installers example-installers}
   (let [two 2]
     (p:id (:/ out two) value)
     (::* value two)))
 
 (acc/def-recursive bidirectional-id
   [value out]
-  {:installers example-installers
-   :bidirectional? true}
+  {:installers example-installers}
   (do
     (p:id out value)
     value))
@@ -728,6 +726,41 @@
             n2 (core/run-tasks tasks n1)]
         (is (= [0 1 1] (list->vec (strongest n2 (:out-id result)))))
         (is (= #{(:applied-net-id result)} (route-owner-ids n2)))))))
+
+(deftest accumulating-gur-strict-pcons-late-cdr-stops-at-nothing
+  (testing "public p:cons late extension uses nothing as the lazy terminal, not empty-list"
+    (let [map-id (ids/new-node-id)
+          fib-id (ids/new-node-id)
+          acc-id (ids/new-node-id)
+          source-id (ids/new-node-id)
+          head0-id (ids/new-node-id)
+          tail0-id (ids/new-node-id)
+          out-id (ids/new-node-id)
+          n0 (-> net/empty-net
+                 (nb/install-cell map-id map-list map-list)
+                 (nb/install-cell fib-id fib fib)
+                 (nb/install-cell acc-id unused-acc-list unused-acc-list)
+                 (nb/install-cell source-id)
+                 (nb/install-cell head0-id 0 0)
+                 (nb/install-cell tail0-id)
+                 (nb/install-cell out-id))
+          [cons0-props n1] ((obj/p:cons head0-id tail0-id source-id) n0)
+          [apply-props n2] ((acc/p:apply-closure map-id
+                                                 [source-id fib-id acc-id]
+                                                 out-id)
+                            n1)
+          n3 (run-props n2 (concat cons0-props apply-props))
+          head1-id (ids/new-node-id)
+          tail1-id (ids/new-node-id)
+          n4 (-> n3
+                 (nb/install-cell head1-id 1 1)
+                 (nb/install-cell tail1-id value/nothing value/nothing))
+          [cons1-props n5] ((obj/p:cons head1-id tail1-id tail0-id) n4)
+          n6 (run-props n5 cons1-props)
+          n7 (run-props n6 apply-props)]
+      (is (= [0] (list->vec (strongest n3 out-id))))
+      (is (= [0 1] (list->vec (strongest n6 out-id))))
+      (is (= [0 1] (list->vec (strongest n7 out-id)))))))
 
 (defn- install-cons! [n tasks head-id tail-id coll-id]
   (let [[prop-ids n'] ((obj/p:cons head-id tail-id coll-id) n)]
