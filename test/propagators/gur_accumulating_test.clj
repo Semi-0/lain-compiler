@@ -375,6 +375,72 @@
    :props (prop-count acc-net)
    :nested-frame-nets (nested-frame-net-count acc-net)})
 
+(deftest accumulating-gur-task-facts-are-idempotent-and-indexed
+  (let [prop-a (ids/new-node-id)
+        prop-b (ids/new-node-id)
+        cause [:test/task-facts]
+        n1 (acc/add-task-facts net/empty-net cause [prop-a prop-b] 0)
+        n2 (acc/add-task-facts n1 cause [prop-a] 0)
+        n3 (acc/add-task-facts n2 cause [prop-a] 1)
+        entry (get (net/network-dict-entry n3 acc/task-index-key) cause)]
+    (is (= #{prop-a prop-b} (:prop-ids entry)))
+    (is (= #{0 1} (:indexes entry)))))
+
+(deftest accumulating-gur-application-request-is-idempotent
+  (let [closure-id (ids/new-node-id)
+        arg-id (ids/new-node-id)
+        applied-net-id (ids/new-node-id)
+        out-id (ids/new-node-id)
+        n0 (-> net/empty-net
+               (nb/install-cell closure-id counted-double-value counted-double-value)
+               (nb/install-cell arg-id 5 5)
+               (nb/install-cell applied-net-id)
+               (nb/install-cell out-id))
+        [apply-prop n1] ((acc/p:accumulate-apply-closure closure-id
+                                                         [arg-id]
+                                                         applied-net-id
+                                                         out-id)
+                         n0)
+        n2 (run-props n1 [apply-prop])
+        requested (strongest n2 applied-net-id)
+        n3 (run-props n2 [apply-prop])
+        requested* (strongest n3 applied-net-id)
+        app-key (acc/application-key closure-id [arg-id] out-id)]
+    (is (net/net? requested))
+    (is (= #{app-key} (set (keys (acc/application-requests requested)))))
+    (is (= requested requested*))
+    (is (= #{app-key} (set (keys (acc/application-requests requested*)))))))
+
+(deftest accumulating-gur-when-topology-is-lazy-and-idempotent
+  (let [condition-id (ids/new-node-id)
+        body-out-id (ids/new-node-id)
+        applied-net-id (ids/new-node-id)
+        n0 (-> net/empty-net
+               (nb/install-cell condition-id)
+               (nb/install-cell body-out-id)
+               (nb/install-cell applied-net-id))
+        [when-prop n1] ((acc/p:when-topology condition-id
+                                             {'x condition-id
+                                              'y body-out-id}
+                                             '(p:id x y)
+                                             (compile/default-installers)
+                                             applied-net-id)
+                        n0)
+        n2 (run-props n1 [when-prop])
+        [tasks n3] (core/eval-cell* (net/net-dict-or-empty n2)
+                                    (message condition-id 7)
+                                    n2)
+        n4 (core/run-tasks tasks n3)
+        applied-net (strongest n4 applied-net-id)
+        body-props (prop-count applied-net)
+        n5 (run-props n4 [when-prop])
+        applied-net* (strongest n5 applied-net-id)]
+    (is (value/nothing? (strongest n2 applied-net-id)))
+    (is (net/net? applied-net))
+    (is (pos? body-props))
+    (is (= body-props (prop-count applied-net*)))
+    (is (= applied-net applied-net*))))
+
 (deftest accumulating-gur-computes-scalar-recursion
   (testing "scalar parity cases"
     (is (= 0 (:value (run-closure fib [0]))))
@@ -684,7 +750,7 @@
     (is (nil? (net/network-dict-entry (:acc-net result) queue/child-queue-key)))
     (is (nil? (net/network-dict-entry rerun-acc-net queue/child-queue-key)))
     (is (seq (net/network-dict-entry rerun-acc-net acc/task-index-key)))
-    (is (not (re-find #":(cursor|pending|ran|scheduled)"
+    (is (not (re-find #":(cursor|pending|ran|scheduled|task-cursor|request-cache|prop-state-cache|mailbox-epoch|boundary-cache|last-input-token)"
                       (pr-str (net/net-dict-or-empty rerun-acc-net)))))))
 
 (defn- dispatch-route-value
