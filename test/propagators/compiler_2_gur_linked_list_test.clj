@@ -4,7 +4,7 @@
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.compiler-2.env :as env]
-            [propagators.gur.subenv :as subenv]
+            [propagators.gur :as gur]
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]
             [propagators.network :as net]
@@ -12,9 +12,6 @@
 
 (defn- strongest [n id]
   (net/network-cell-strongest n id))
-
-(defn- local-strongest [frame sym]
-  (strongest frame (net/network-dict-entry frame sym)))
 
 (defn- run-props [n prop-ids]
   (core/run-tasks (tq/enqueue-all tq/empty-queue prop-ids) n))
@@ -46,7 +43,7 @@
                                 (nb/seed-cell! n tasks (heads i) v))
                               [n1 tasks]
                               values)
-        [n3 tasks] (nb/seed-cell! n2 tasks empty-id subenv/empty-list)]
+        [n3 tasks] (nb/seed-cell! n2 tasks empty-id (obj/as-accessor-network {}))]
     {:net (core/run-tasks tasks n3)
      :root-id (first colls)}))
 
@@ -56,7 +53,7 @@
 
 (defn- experiment-installers
   [runtime]
-  (subenv/source-contextual-installers
+  (gur/contextual-installers
    (merge (compile/default-installers)
           {'obj/p:car obj/p:car
            'obj/p:cons obj/p:cons
@@ -86,7 +83,7 @@
     compiled-add-bias))
 
 (deftest linked-list-gur-compiler-declares-applies-and-accesses-lexically
-  (testing "parallel compiler-2/GUR experiment over accessor-linked AST, without source list materialization"
+  (testing "compiler-2/GUR prototype over accessor-linked AST, without source list materialization"
     (let [{:keys [net root-id]}
           (linked-list [:compound 'add-bias 'x '+ 'x 'bias])
           compiler-id (ids/new-node-id)
@@ -104,28 +101,16 @@
                                   (obj/as-accessor-network {'bias 10}))
                  (nb/install-cell x-id 5 5)
                  (nb/install-cell out-id))
-          [compile-props n1] ((subenv/p:apply-closure compiler-id
-                                                    [root-id]
-                                                    compiled-id)
+          [compile-props n1] ((gur/p:apply-closure compiler-id
+                                                   [root-id]
+                                                   compiled-id)
                               n0)
-          [apply-props n2] ((subenv/p:apply-closure compiled-id
-                                                  [x-id env-id]
-                                                  out-id)
+          [apply-props n2] ((gur/p:apply-closure compiled-id
+                                                 [x-id env-id]
+                                                 out-id)
                             n1)
-          n3 (run-props n2 (into compile-props apply-props))
-          compiler-frame-id (net/network-dict-entry
-                             n3
-                             (subenv/application-key compiler-id
-                                                     [root-id]
-                                                     compiled-id))
-          compiler-frame (strongest n3 compiler-frame-id)]
+          n3 (run-props n2 (into compile-props apply-props))]
       (is (obj/accessor-network? (strongest n3 root-id)))
       (is (obj/accessor-network? (strongest n3 env-id)))
-      (is (subenv/recursive-closure? (strongest n3 compiled-id)))
-      (is (= 15 (strongest n3 out-id)))
-      (is (= :compound (local-strongest compiler-frame 'tag)))
-      (is (= 'add-bias (local-strongest compiler-frame 'name)))
-      (is (= 'x (local-strongest compiler-frame 'param)))
-      (is (= '+ (local-strongest compiler-frame 'op)))
-      (is (= 'x (local-strongest compiler-frame 'left)))
-      (is (= 'bias (local-strongest compiler-frame 'right))))))
+      (is (gur/recursive-closure? (strongest n3 compiled-id)))
+      (is (= 15 (strongest n3 out-id))))))

@@ -109,7 +109,9 @@ recursive AST or linked-list traversal, recursively constructed lexical
 accessors, and higher-order operators that need unbounded but idempotent network
 declaration. In that role GUR must be fast enough to keep compiler-scale
 prototype work practical, but it does not need to become the lifecycle manager
-for the whole language.
+for the whole language. The canonical implementation namespace is
+`propagators.gur`, backed by accumulating GUR; older GUR variants are retained
+only as compatibility and regression evidence.
 
 This also sets the GC expectation. Accumulating GUR may retain monotone frame
 and task facts for now; garbage collection is not the first prototype

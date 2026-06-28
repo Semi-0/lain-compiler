@@ -12,6 +12,7 @@ Source files:
 - `propagators/compiler_2/helpers.clj`
 - `propagators/datastructures/scope_source.clj`
 - `propagators/datastructures/dependency.clj`
+- `propagators/gur.clj`
 - `test/propagators_compile_2_test.clj`
 - `test/propagators/compiler_2_gur_linked_list_test.clj`
 
@@ -149,10 +150,10 @@ cells except through the declared output/result.
 
 ## Parallel GUR Linked-List Probe
 
-`test/propagators/compiler_2_gur_linked_list_test.clj` is a parallel experiment,
-not the active compiler-2 lowering. It keeps the existing compiler path intact
-and demonstrates the next target shape with GUR and public compound-object
-linked-list accessors.
+`test/propagators/compiler_2_gur_linked_list_test.clj` is a prototype slice, not
+the active compiler-2 lowering. It keeps the existing compiler path intact and
+demonstrates the next target shape with canonical accumulating GUR and public
+compound-object linked-list accessors.
 
 The test builds the declaration source as cells plus `obj/p:cons` /
 `obj/p:car` / `obj/p:cdr`:
@@ -163,9 +164,10 @@ The test builds the declaration source as cells plus `obj/p:cons` /
 
 It does not seed a materialized `subenv/cons-list-value` or read the source list
 back into Clojure data during compilation. The experiment declarations use the
-existing `compile/def-recursive` source DSL: a small GUR compiler closure walks
-that linked-list declaration through accessor topology, emits a GUR closure
-value, then applies that closure with `gur.subenv/p:apply-closure`.
+existing `compile/def-recursive` source DSL, which now targets accumulating
+GUR. A small GUR compiler closure walks that linked-list declaration through
+accessor topology, emits a GUR closure value, then applies that closure with
+`propagators.gur/p:apply-closure`.
 
 The compiled closure demonstrates lexical access without materializing the
 environment. Its body receives an accessor-backed env cell, installs
