@@ -7,7 +7,7 @@
   output diff back to the outer network.
   "
   (:require [propagators.boundary :as boundary]
-            [propagators.cells.diff :refer [diff-internal-output-cells]]
+            [propagators.cells.merge :as cell-merge]
             [propagators.cells.snapshot :refer [pop-inputs]]
             [propagators.cells.value :as value]
             [propagators.compiler-2.application-value :as application-value]
@@ -80,6 +80,24 @@
             materialized (nb/run-propagators slot-net prop-ids)]
         (h/strongest-or-nothing materialized collection-id)))))
 
+(defn- accessor-value-parent-ids
+  [v]
+  (if (obj/accessor-network? v)
+    (->> (obj/accessor-slot-keys v)
+         (mapcat #(obj/accessor-parent-ids v %)))
+    []))
+
+(defn- materialization-parent-ids
+  [outer-net collection-id]
+  (let [raw-value (h/strongest-or-nothing outer-net collection-id)
+        decls (merge-with merge
+                          (obj/slot-declarations-for outer-net collection-id)
+                          (obj/accessor-declarations-for outer-net collection-id))]
+    (->> (concat (accessor-value-parent-ids raw-value)
+                 (mapcat keys (vals decls)))
+         distinct
+         vec)))
+
 (defn- inner->outer-boundary-map
   [network]
   (into {}
@@ -98,10 +116,28 @@
               (env/externalize-env closure-env
                                    (inner->outer-boundary-map network)))))))
 
+(defn- snapshot-accessor-output
+  [v]
+  (if (obj/accessor-network? v)
+    (obj/compound-object
+     (into {}
+           (keep (fn [slot-key]
+                   (let [slot-value (obj/slot-value v slot-key)]
+                     (when-not (value/unusable? slot-value)
+                       [slot-key slot-value]))))
+           (obj/accessor-slot-keys v)))
+    v))
+
 (defn- externalize-output-value
   [v network]
-  (if (closure-value/closure-info? v)
+  (cond
+    (closure-value/closure-info? v)
     (externalize-closure-value v network)
+
+    (obj/accessor-network? v)
+    (snapshot-accessor-output v)
+
+    :else
     v))
 
 (defn- argument-cell-ids
@@ -164,14 +200,34 @@
    body-env
    state))
 
+(defn- output-adapter-messages
+  [current-net result-id out-inner]
+  (let [result-value (materialize-slot-object current-net result-id)]
+    (if (value/unusable? result-value)
+      []
+      [(message out-inner
+                (externalize-output-value result-value current-net))])))
+
+(defn- output-adapter-wakeup-effects
+  [current-net result-id out-inner]
+  (let [parent-ids (materialization-parent-ids current-net result-id)]
+    (if (empty? parent-ids)
+      []
+      (-> (i/context current-net
+                     [:compiler-2 :output-adapter result-id out-inner parent-ids])
+          (i/prop :materialize
+                  (into [result-id] parent-ids)
+                  []
+                  (fn [_inputs _outputs network]
+                    (output-adapter-messages network result-id out-inner)))
+          i/effects))))
+
 (defn- output-adapter
   [result-id out-inner]
   (prop/construct-propagator
-   (prop/concrete-propagator
-    (fn [_inputs _outputs current-net]
-     (let [result-value (materialize-slot-object current-net result-id)]
-       [(message out-inner
-                 (externalize-output-value result-value current-net))])))
+   (fn [_inputs _outputs current-net]
+     {:effects (output-adapter-wakeup-effects current-net result-id out-inner)
+      :messages (output-adapter-messages current-net result-id out-inner)})
    [result-id]
    [out-inner]))
 
@@ -187,6 +243,22 @@
   (if (= 1 (count output-inners))
     (install-output-adapter n result-id (first output-inners))
     [n []]))
+
+(defn- externalized-output-messages
+  [network-from network-to external-outputs]
+  (keep identity
+        (map (fn [ext]
+               (when-let [int-id (net/lookup-inner-out network-from ext)]
+                 (let [inner-value (h/strongest-or-nothing network-from int-id)
+                       outer-value (h/strongest-or-nothing network-to ext)
+                       output-value (externalize-output-value inner-value
+                                                              network-from)]
+                   (when (and (not (value/unusable? output-value))
+                              (cell-merge/cell-updated? output-value
+                                                        outer-value
+                                                        network-to))
+                     (message ext output-value)))))
+             (vec external-outputs))))
 
 (defn- run-activation-network
   [n inner-inputs prop-ids]
@@ -266,9 +338,9 @@
                                          (vec arg-ids)
                                          targets)]
         {:effects structural-effects
-         :messages (diff-internal-output-cells after-body
-                                               network*
-                                               output-ids)}))))
+         :messages (externalized-output-messages after-body
+                                                 network*
+                                                 output-ids)}))))
 
 (defn p:apply-closure
   "Apply a compiler-2 closure-info cell to argument cells and one output cell."
