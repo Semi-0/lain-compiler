@@ -62,6 +62,13 @@
                output-slot output
                body-slot (ast body)}))
 
+(defn def-net [name inputs output body]
+  (ast-object {type-slot :def-net
+               name-slot name
+               inputs-slot (vec inputs)
+               output-slot output
+               body-slot (ast body)}))
+
 (defn ast [x]
   (cond
     (ast-node? x) (obj/compound-object x)

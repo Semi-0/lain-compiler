@@ -58,6 +58,19 @@
   (ast/network (symbol-vector params ":: params")
                (body-form body "::")))
 
+(defn- parse-network-form [[inputs outputs & body]]
+  (ast/compound {:inputs (symbol-vector inputs "network inputs")
+                 :output (symbol-vector outputs "network outputs")}
+                (body-form body "network")))
+
+(defn- parse-def-net [[name inputs outputs & body]]
+  (when-not (symbol? name)
+    (parse-error "def-net name must be a symbol" {:name name}))
+  (ast/def-net name
+               (symbol-vector inputs "def-net inputs")
+               (symbol-vector outputs "def-net outputs")
+               (body-form body "def-net")))
+
 (defn- parse-compound-spec [spec]
   (cond
     (map? spec)
@@ -76,8 +89,10 @@
         [output body] (if (some? map-output)
                         [map-output rest-args]
                         [(first rest-args) (rest rest-args)])]
-    (when-not (symbol? output)
-      (parse-error "compound output must be a symbol" {:output output}))
+    (when-not (or (symbol? output)
+                  (and (vector? output) (every? symbol? output)))
+      (parse-error "compound output must be a symbol or symbol vector"
+                   {:output output}))
     (ast/compound {:inputs inputs
                    :output output}
                   (body-form body "compound"))))
@@ -97,12 +112,13 @@
     (case (first form)
       let-cell (parse-let-cell (rest form))
       :compiler/network (parse-network (rest form))
+      network (parse-network-form (rest form))
+      def-net (parse-def-net (rest form))
       compound (parse-compound (rest form))
       app-> (removed-form form)
       do (removed-form form)
       let-network (removed-form form)
       let-compound (removed-form form)
-      network (removed-form form)
       (parse-application form))
 
     (vector? form)

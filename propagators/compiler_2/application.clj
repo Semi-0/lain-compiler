@@ -17,6 +17,7 @@
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.helpers.task-queue :as tq]
+            [propagators.install :as i]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.network-builder :as nb]
@@ -112,10 +113,44 @@
       (mapv #(obj/slot-value arg-object %)
             (sort-by pr-str (obj/public-slot-keys arg-object))))))
 
+(defn- output-symbols
+  [output]
+  (cond
+    (nil? output) []
+    (symbol? output) [output]
+    (vector? output) output
+    :else []))
+
+(defn- output-target-id
+  [out-id sym]
+  (h/stable-node-id :compiler-2 :closure-output out-id sym))
+
+(defn- output-targets
+  [output out-id]
+  (let [syms (output-symbols output)]
+    (cond
+      (empty? syms) [[nil out-id]]
+      (= 1 (count syms)) [[(first syms) out-id]]
+      :else (mapv (fn [sym] [sym (output-target-id out-id sym)]) syms))))
+
+(defn- structural-output-effects
+  [network out-id targets]
+  (if (<= (count targets) 1)
+    []
+    (-> (reduce (fn [ctx [sym target-id]]
+                  (i/slot ctx sym target-id out-id))
+                (i/context network [:compiler-2 :multi-output out-id])
+                targets)
+        i/effects)))
+
 (defn- body-env
-  [lexical-env inputs output input-ids out-id]
-  (let [base-env (cond-> (env/sub-env lexical-env)
-                   output (env/bind-local output (env/cell-binding out-id)))]
+  [lexical-env inputs output-targets input-ids]
+  (let [base-env (reduce (fn [scoped-env [sym id]]
+                           (if sym
+                             (env/bind-local scoped-env sym (env/cell-binding id))
+                             scoped-env))
+                         (env/sub-env lexical-env)
+                         output-targets)]
     (reduce
      (fn [scoped-env [sym id]]
        (env/bind-local scoped-env sym (env/cell-binding id)))
@@ -147,6 +182,12 @@
       [n' [prop-id]])
     [n []]))
 
+(defn- install-output-adapters
+  [n result-id output-inners]
+  (if (= 1 (count output-inners))
+    (install-output-adapter n result-id (first output-inners))
+    [n []]))
+
 (defn- run-activation-network
   [n inner-inputs prop-ids]
   (let [input-prop-ids (pop-inputs inner-inputs (net/net-graph n))
@@ -155,26 +196,28 @@
     (core/run-tasks tasks n)))
 
 (defn- run-closure-body
-  [network closure-info arg-ids out-id]
+  [network closure-info arg-ids output-targets]
   (let [inputs (closure-value/closure-inputs closure-info)
         output (closure-value/closure-output closure-info)
         lexical-env (closure-value/closure-env closure-info)
         body (closure-value/closure-body closure-info)
-        output-ids [out-id]]
+        output-ids (mapv second output-targets)]
     (if (or (value/unusable? lexical-env)
             (value/unusable? body)
             (not= (count inputs) (count arg-ids)))
       network
-      (-> network
+      (-> (reduce h/ensure-cell network output-ids)
           (boundary/create-boundary-outputs output-ids)
           (boundary/create-boundary-inputs arg-ids)
           (#(let [inner-inputs (mapv (partial net/lookup-inner-in %) arg-ids)
-                  [out-inner] (mapv (partial net/lookup-inner-out %) output-ids)
+                  output-inners (mapv (partial net/lookup-inner-out %) output-ids)
                   activation-env (body-env lexical-env
                                            inputs
-                                           output
-                                           inner-inputs
-                                           out-inner)
+                                           (mapv (fn [[sym _id] inner-id]
+                                                   [sym inner-id])
+                                                 output-targets
+                                                 output-inners)
+                                           inner-inputs)
                   [state' result] (compile-body
                                    body
                                    activation-env
@@ -183,12 +226,14 @@
                                     :seed [:compiler-2/apply-closure
                                            (closure-value/closure-scope closure-info)
                                            arg-ids
-                                           out-id]
+                                           output-ids]
                                     :path []
                                     :props []})
                   result-id (env/binding-id result)
                   [activation-net adapter-props]
-                  (install-output-adapter (:net state') result-id out-inner)]
+                  (install-output-adapters (:net state')
+                                           result-id
+                                           output-inners)]
               (run-activation-network activation-net
                                       inner-inputs
                                       (into (:props state') adapter-props))))))))
@@ -210,11 +255,20 @@
             (value/unusable? arg-object)
             (value/any-unusable-values? arg-values))
       []
-      (let [after-body (run-closure-body network
+      (let [targets (output-targets (closure-value/closure-output
+                                     materialized-closure)
+                                    out-id)
+            output-ids (mapv second targets)
+            network* (reduce h/ensure-cell network output-ids)
+            structural-effects (structural-output-effects network out-id targets)
+            after-body (run-closure-body network*
                                          materialized-closure
                                          (vec arg-ids)
-                                         out-id)]
-        (diff-internal-output-cells after-body network [out-id])))))
+                                         targets)]
+        {:effects structural-effects
+         :messages (diff-internal-output-cells after-body
+                                               network*
+                                               output-ids)}))))
 
 (defn p:apply-closure
   "Apply a compiler-2 closure-info cell to argument cells and one output cell."

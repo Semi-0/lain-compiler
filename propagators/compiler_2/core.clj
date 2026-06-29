@@ -165,6 +165,17 @@
   [expr _env state]
   (compile-network state (ast/inputs expr) (ast/output expr) (ast/body expr)))
 
+(defmethod g:compile :def-net
+  [expr _env state]
+  (let [[state' binding] (compile-network state
+                                          (ast/inputs expr)
+                                          (ast/output expr)
+                                          (ast/body expr))]
+    [(assoc state' :env (env/bind-local (:env state')
+                                        (ast/name expr)
+                                        binding))
+     binding]))
+
 (defmethod g:compile :application
   [expr _env state]
   (compile-application state (ast/operator expr) (ast/args expr)))
