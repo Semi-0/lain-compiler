@@ -1,20 +1,30 @@
 (ns propagators.compiler-2-gur-linked-list-test
   (:require [clojure.test :refer [deftest is testing]]
+            [propagators.cells.cell-protocol :as protocol]
+            [propagators.cells.value :as value]
             [propagators.compile :as compile]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.scope-source :as scope-source]
             [propagators.compiler-2.env :as env]
             [propagators.gur :as gur]
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]
             [propagators.network :as net]
-            [propagators.network-builder :as nb]))
+            [propagators.network-builder :as nb]
+            [propagators.propagator :as prop]))
 
 (defn- strongest [n id]
   (net/network-cell-strongest n id))
 
 (defn- run-props [n prop-ids]
   (core/run-tasks (tq/enqueue-all tq/empty-queue prop-ids) n))
+
+(defn- scope-source-protocol-net
+  []
+  (-> net/empty-net
+      (compile/install-and-run (protocol/install-cell-protocol))
+      (compile/install-and-run (protocol/install-scope-source-protocol))))
 
 (defn- install-cons! [n tasks head-id tail-id coll-id]
   (let [[prop-ids n'] ((obj/p:cons head-id tail-id coll-id) n)]
@@ -27,7 +37,9 @@
         heads (vec (repeatedly len ids/new-node-id))
         colls (vec (repeatedly len ids/new-node-id))
         empty-id (ids/new-node-id)
-        n0 (nb/install-cells (conj (into heads colls) empty-id))
+        n0 (reduce nb/install-cell
+                   (scope-source-protocol-net)
+                   (conj (into heads colls) empty-id))
         [n1 tasks] (reduce
                     (fn [[n tasks] i]
                       (install-cons! n
@@ -51,12 +63,35 @@
   [env-id out-id]
   (env/p:lexical-access 'bias env-id out-id))
 
+(defn- scoped-plus
+  [a-id b-id out-id]
+  ((prop/primitive-propagator
+    (fn [a b]
+      (let [values [(scope-source/unwrap a) (scope-source/unwrap b)]]
+        (cond
+          (some value/contradiction? values) value/contradiction
+          (some value/nothing? values) value/nothing
+          :else (try
+                  (apply + values)
+                  (catch Exception _
+                    value/contradiction))))))
+   a-id
+   b-id
+   out-id))
+
+(defn- lexical-env
+  [sym value]
+  (-> (obj/empty-compound-object)
+      (env/set-depth 0)
+      (env/bind-local sym value)))
+
 (defn- experiment-installers
   [runtime]
   (gur/contextual-installers
    (merge (compile/default-installers)
           {'obj/p:car obj/p:car
            'obj/p:cons obj/p:cons
+           'prop/+ scoped-plus
            'p:bias-access bias-access})
    runtime))
 
@@ -97,8 +132,8 @@
                                   linked-list-compiler)
                  (nb/install-cell compiled-id)
                  (nb/install-cell env-id
-                                  (obj/as-accessor-network {'bias 10})
-                                  (obj/as-accessor-network {'bias 10}))
+                                  (lexical-env 'bias 10)
+                                  (lexical-env 'bias 10))
                  (nb/install-cell x-id 5 5)
                  (nb/install-cell out-id))
           [compile-props n1] ((gur/p:apply-closure compiler-id

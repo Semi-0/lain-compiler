@@ -25,12 +25,6 @@
 (def apply-closure-props-key :compiler-2/apply-closure-props)
 (def apply-application-props-key :compiler-2/apply-application-props)
 
-(defn- strongest-or-nothing
-  [n id]
-  (if (contains? (net/net-env n) id)
-    (net/network-cell-strongest n id)
-    value/nothing))
-
 (defn- copy-outer-cell
   [n outer-net id]
   (cond
@@ -44,7 +38,7 @@
                      (net/network-cell-strongest outer-net id))
 
     :else
-    (nb/ensure-cell n id)))
+    (h/ensure-cell n id)))
 
 (defn- install-declared-slot
   [n collection-id [slot-key parent->declaration]]
@@ -58,7 +52,7 @@
 (defn materialize-slot-object
   "Evaluate declared slot topology for one compound object in a local frame."
   [outer-net collection-id]
-  (let [raw-value (strongest-or-nothing outer-net collection-id)
+  (let [raw-value (h/strongest-or-nothing outer-net collection-id)
         source-slots (when (obj/accessor-network? raw-value)
                        (obj/accessor-source-slots raw-value))
         source-value (if (seq source-slots)
@@ -71,10 +65,7 @@
       source-value
       (let [base-value (obj/compound-object source-value)
             parent-ids (->> decls vals (mapcat keys) (sort-by pr-str) vec)
-            n0 (nb/install-cell net/empty-net
-                                collection-id
-                                base-value
-                                base-value)
+            n0 (h/seed-cell net/empty-net collection-id base-value)
             n1 (reduce #(copy-outer-cell %1 outer-net %2) n0 parent-ids)
             [slot-net prop-ids]
             (reduce
@@ -86,7 +77,7 @@
              [n1 []]
              (sort-by (comp pr-str key) decls))
             materialized (nb/run-propagators slot-net prop-ids)]
-        (strongest-or-nothing materialized collection-id)))))
+        (h/strongest-or-nothing materialized collection-id)))))
 
 (defn- inner->outer-boundary-map
   [network]
@@ -204,15 +195,15 @@
 
 (defn- closure-application-messages
   [closure-id args-id _scheduled-arg-ids out-id network]
-  (let [closure-cv (strongest-or-nothing network closure-id)
-        arg-object (strongest-or-nothing network args-id)
+  (let [closure-cv (h/strongest-or-nothing network closure-id)
+        arg-object (h/strongest-or-nothing network args-id)
         materialized-closure (when-not (value/unusable? closure-cv)
                                (materialize-slot-object network closure-id))
         materialized-args (when-not (value/unusable? arg-object)
                             (materialize-slot-object network args-id))
         arg-ids (when-not (value/unusable? arg-object)
                   (argument-cell-ids materialized-args))
-        arg-values (mapv #(strongest-or-nothing network %) arg-ids)]
+        arg-values (mapv #(h/strongest-or-nothing network %) arg-ids)]
     (if (or (value/unusable? closure-cv)
             (value/unusable? materialized-closure)
             (not (closure-value/closure-info? materialized-closure))
@@ -237,7 +228,7 @@
                                                  network))
         inputs (into [closure-id args-id] arg-ids)]
     (fn [network]
-      (let [network* (reduce nb/ensure-cell network (conj inputs out-id))
+      (let [network* (reduce h/ensure-cell network (conj inputs out-id))
             [prop-id n] ((prop/construct-propagator activate inputs [out-id])
                          network*)]
         [prop-id
@@ -254,8 +245,8 @@
 
 (defn- application-messages
   [application-id operator-id args-id scheduled-arg-ids context-id out-id network]
-  (let [application-info (strongest-or-nothing network application-id)
-        operator (strongest-or-nothing network operator-id)]
+  (let [application-info (h/strongest-or-nothing network application-id)
+        operator (h/strongest-or-nothing network operator-id)]
     (cond
       (value/unusable? application-info)
       []
@@ -298,7 +289,7 @@
                                          network))
         inputs (into [application-id operator-id args-id context-id] arg-ids)]
     (fn [network]
-      (let [network* (reduce nb/ensure-cell network (conj inputs out-id))
+      (let [network* (reduce h/ensure-cell network (conj inputs out-id))
             [prop-id n] ((prop/construct-propagator activate inputs [out-id])
                          network*)]
         [prop-id

@@ -32,6 +32,12 @@
     network
     (nb/install-cell network id)))
 
+(defn strongest-or-nothing
+  [network id]
+  (if (contains? (net/net-env network) id)
+    (net/network-cell-strongest network id)
+    value/nothing))
+
 (defn seed-cell [network id v]
   (nb/seed-cell (ensure-cell network id) id v))
 

@@ -205,30 +205,85 @@ existing compiler behavior green.
 
 ## Lexical Environments
 
-Environments are compound objects. Each symbol slot stores a scope-source
-candidate whose base is a compiler binding:
+Environments are explicit lexical frames. A frame has metadata slots:
 
 ```clojure
-{:base         {:binding/type :cell, :binding/id id}
- :scope/source {:scope/id defining-scope
-                :scope/chain active-chain}}
+:env/parent
+:env/scope
+:env/scope-chain
+:env/depth
 ```
 
-Multiple candidates may exist for one symbol. `scope-source/strongest-value`
-selects the candidate whose defining scope appears nearest in the active scope
-chain. Equal nearest candidates with different bases contradict. Candidates
-whose source is not in the active chain are retained but not selected.
+Each symbol slot stores a binding slot, not a scoped value:
+
+```clojure
+x -> {:value {:binding/type :cell, :binding/id x-cell}}
+```
+
+The env answers "which cell does this name designate?" The pointed-to cell
+answers "what is its current value and provenance?" Refinement happens in the
+cell, not by replacing the env slot.
 
 `scope-source` is only lexical lookup metadata. It does not carry arithmetic
-provenance or dependency information.
+provenance or dependency information. Lexical access wraps the current binding
+payload with the frame source and active chain:
 
-`compiler-2.env/p:lexical-access` keeps recursive accessor traversal separate
-from lexical choice. It installs `obj/p:slot` into an intermediate slot cell,
-then a small transfer propagator copies the accumulated slot content into the
-lexical output cell, where the `scope-source` protocol performs strongest
-selection. The transfer still falls back to the raw env slot when the accessor
-cell is empty, because current accessor slots do not expose non-ancestor
-scope-source candidates as content.
+```clojure
+scope-source(source-frame, active-chain, payload-from-bound-cell)
+```
+
+Dependency/provenance should live in the bound cell's value, for example as a
+`dependency-value`. The lexical access result can then be a `scope-source`
+whose payload is already dependency-aware.
+
+### Propagator Lexical Mindset
+
+Propagation is simultaneous and monotonic. If both child and parent lexical
+edges are installed, a parent value can fire before the child binding/value has
+refined enough to make the parent path invalid. That earlier parent message
+cannot be retracted; a later child value can only add information or contradict.
+
+So lexical shadowing must be structural:
+
+```text
+wrong: install all frame reads, rank strongest values later
+right: parent traversal is blocked by local binding presence
+```
+
+For lexical scope, the guard is "this frame binds `x`", not "this frame's `x`
+cell currently has a value." Binding presence is structural and monotonic;
+value availability is not.
+
+The current experiment records that structural guard in each frame's
+`:env/local-bindings` slot. `p:sub-env` creates an empty local declaration set,
+and `p:bind-local` creates a same-scope binding frame whose local declaration
+set contains the bound symbol. `p:lexical-access` reads this metadata through
+slot accessors:
+
+- if the frame declares the symbol, install only the local scope-source path;
+- if the frame metadata is known and does not declare the symbol, recurse to
+  `:env/parent`;
+- if the metadata is unknown, emit nothing.
+
+This keeps late binding payloads and late closure values possible: the binding
+frame can exist before the cell it points at has refined. It does not solve
+truly late same-frame declaration, such as replacing a frame's local binding
+set from "does not bind `x`" to "binds `x`" after parent traversal has already
+emitted. That case needs a monotonic declaration representation, reducer
+claims, or TMS-style retraction later.
+
+Do not write read-local `scope-source` back into the bound cell. The same cell
+can be accessed from different lexical chains, so access context belongs on the
+access result, while derivation provenance belongs in the cell value.
+
+Practical rules:
+
+- Env slots store binding addresses only.
+- Bound cells carry value refinement and derivation provenance.
+- Lexical access adds access-context as `scope-source`.
+- Parent lexical traversal must be blocked by local binding presence.
+- Contradiction means the graph allowed incompatible facts to meet; it is not
+  something an imperative overwrite would have fixed.
 
 ## Dependency Arithmetic
 
