@@ -77,6 +77,40 @@
             context-id))
        (env/cell-binding result-id)])))
 
+(defn- closure-output-symbols
+  [output]
+  (cond
+    (nil? output) []
+    (symbol? output) [output]
+    (vector? output) output
+    :else []))
+
+(defn- known-closure-info
+  [network id]
+  (let [v (h/strongest-or-nothing network id)
+        materialized (when-not (value/unusable? v)
+                       (compiler-app/materialize-slot-object network id))]
+    (when (closure-value/closure-info? materialized)
+      materialized)))
+
+(defn- closure-application-result-id
+  [state operator-id arg-ids out-id]
+  (if-let [closure-info (known-closure-info (:net state) operator-id)]
+    (let [inputs (closure-value/closure-inputs closure-info)
+          outputs (closure-output-symbols
+                   (closure-value/closure-output closure-info))]
+      (if (seq outputs)
+        (do
+          (when-not (= (count arg-ids)
+                       (+ (count inputs) (count outputs)))
+            (throw (ex-info "network application requires explicit output cells"
+                            {:inputs inputs
+                             :outputs outputs
+                             :arg-count (count arg-ids)})))
+          (peek arg-ids))
+        out-id))
+    out-id))
+
 (defmethod g:apply :cell
   [operator-binding operand-forms _calling-env state out-id]
   (let [app-id (:application/app-id state)
@@ -89,7 +123,11 @@
                       {:args arg-bindings})))
     (let [[state'' args-binding] (common/install-argument-object state' arg-ids)
           args-id (env/binding-id args-binding)
-          operator-id (env/binding-id operator-binding)]
+          operator-id (env/binding-id operator-binding)
+          result-id (closure-application-result-id state''
+                                                   operator-id
+                                                   arg-ids
+                                                   out-id)]
       [(-> state''
            (assoc :application/args-id args-id
                   :application/arg-ids arg-ids
@@ -98,9 +136,9 @@
             app-id
             operator-ast
             operator-id
-            out-id
+            result-id
             context-id))
-       (env/cell-binding out-id)])))
+       (env/cell-binding result-id)])))
 
 (defmethod g:apply :unsupported
   [operator-binding _operand-forms _calling-env _state _out-id]

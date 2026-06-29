@@ -1,8 +1,8 @@
 First compiler-2 prototype scope:
 
-- first slice: ordinary application, `let-cell`, `def-net`, `network`, existing
-  `::`, and existing `switch`.
-- sugar after that: Clojure-like `let`, `cell`, `def-cell`, and `when`.
+- first slice: ordinary application, `let-cell`, `def-net`, `network`, `cell`,
+  existing `::`, and existing `switch`.
+- sugar after that: Clojure-like `let`, `def-cell`, and `when`.
 - later: recursion syntax, compound data syntax, predicates, reflection, TMS,
   behavior history APIs, IO, networking, and macros.
 - key reflective target: `compile` / `evaluate` should compile expressions into
@@ -16,6 +16,21 @@ First compiler-2 prototype scope:
 
 0.2 Cell Based Application
 (<closure> <cell> <cell> ...) -> <cell>
+
+Declared-output closures consume explicit output cells as the tail applicants:
+
+```clojure
+(let-cell [same next]
+  ((network [x] [same next]
+     (<-> x same)
+     (<-> (+ x 1) next))
+   4 same next)
+  next)
+```
+
+The network call builds relationships among supplied cells. It does not create
+a hidden result object. To return a cell from the surrounding expression, return
+that cell explicitly, as `next` above.
 
 apply
 (@ <closure> [args]) 
@@ -42,8 +57,8 @@ Prototype: keep `let-cell`; add `let` only as sugar over named cells and sync.
   <body>
 )
 
-Prototype: implement this first as named closure data over the existing
-`::` / `compound` path. The name cell owns the definition closure.
+Prototype: implement this first as named closure data. The name cell owns the
+definition closure.
 
 (both def-net and def cell supports native tail recursion)
 
@@ -65,10 +80,14 @@ annoymous network
 )
 
 Prototype: support this with the same closure representation as `def-net`.
+Declared outputs must be supplied explicitly at application sites.
 
 (body can be a one time network since we can use network as a value)
 (cell [input-cells] <body>) 
 or (:: [<input-cells>] <body>)
+
+`cell` / `::` are zero-output closure forms. Applying them returns the body
+result cell.
 
 3. conditional network 
 

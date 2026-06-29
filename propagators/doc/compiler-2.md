@@ -34,14 +34,36 @@ The current surface language is intentionally small:
 (:: [x]
   (+ x 1))
 
-(compound [x] out
+(cell [x]
   (+ x 1))
+
+(network [x] [out]
+  (<-> (+ x 1) out))
+
+(def-net inc [x] [out]
+  (<-> (+ x 1) out))
 ```
 
-`::` is the first-class network closure form. `compound` is a compatibility
-wrapper with an explicit output symbol. Ordinary lists are applications and
-return a result cell. The parser still produces AST data; `core.clj` compiles
-that AST directly.
+`::` and `cell` are zero-output closure forms: applying them returns the
+closure body's result cell. `network` and `def-net` are declared-output network
+forms: applying them requires explicit output cells as the tail of the applicant
+list. The parser still produces AST data; `core.clj` compiles that AST directly.
+
+For example:
+
+```clojure
+(let-cell [same next]
+  ((network [x] [same next]
+     (<-> x same)
+     (<-> (+ x 1) next))
+   4 same next)
+  next)
+```
+
+The call above supplies `x`, `same`, and `next` as applicants. The network body
+declares relationships among those cells. Returning `next` is a separate source
+expression; the network call does not synthesize a hidden result object with
+`same` / `next` slots.
 
 ## Two-Stage Compilation Model
 
@@ -120,9 +142,12 @@ tag.
 Closure-valued operators use the original operator cell. Arguments are recorded
 in an argument object cell, and the application prop is wired to the application
 cell, operator cell, argument object cell, argument cells, context cell, and
-output cell. Closure calls retain the same application IR object shape with a
-`:closure-cell` lowering tag. That wiring is important: later operator or
-argument updates wake the same application through normal scheduler adjacency.
+output cell. For zero-output closures, that output cell is the implicit result
+cell. For declared-output `network` / `def-net` closures, the formal output
+symbols are bound to the tail argument cells instead. Closure calls retain the
+same application IR object shape with a `:closure-cell` lowering tag. That
+wiring is important: later operator or argument updates wake the same
+application through normal scheduler adjacency.
 
 At activation time `p:apply-application`:
 
@@ -132,7 +157,7 @@ At activation time `p:apply-application`:
 4. for primitive operators, emits primitive result messages directly
 5. for closure values, delegates to the closure application path
 
-For closure values, the closure application path:
+For zero-output closure values, the closure application path:
 
 1. materializes closure slot topology for the operator closure cell
 2. waits while the closure value, argument object, or argument values are
@@ -147,6 +172,93 @@ For closure values, the closure application path:
 
 This is the boundary that prevents inner local variables from writing to outer
 cells except through the declared output/result.
+
+For declared-output network values, the runtime first splits application
+applicants into input cells and output cells. Only input cells must have values
+before activation. Output cells are boundary outputs, so late output flow is not
+blocked by their initial `nothing` value. The declared output symbols bind to
+those explicit output cells; no structural output slots are created under the
+application result.
+
+## Runtime Blocks And Semantic Tracing
+
+The current runtime prototype is in:
+
+- `graph/compiler_2_runtime.clj`
+- `graph/compiler_2_runtime_server.clj`
+- `graph/compiler_2_tui.clj`
+- `graph/compiler_2_semantic_repl.clj`
+- `propagators/semantic_trace.clj`
+
+The runtime owns one growing compiler-2 program environment. Multiple
+TUI/socket clients can connect to that same runtime. Each client instance owns
+its own block list and view state; it is not a shared document UI. Authored
+blocks from those instance-local lists are still compiled into the same runtime
+env/net, so definitions from one instance can become part of the shared program
+state seen by later rebuilds. Generated output blocks are not compiled unless
+the user edits them.
+
+Normal blocks contain compiler-2 source. There are no runtime source special
+forms: authored block text always goes through compiler-2. Runtime reflection is
+available only through operators installed into the compiler environment. Each
+client block list is bound as `<client-id>.block`.
+
+```clojure
+(let-cell [v]
+  (block-at tui-a.block 1 v)
+  (block-at tui-b.block 1 v)
+  v)
+
+(let-cell [next g]
+  (inc1 4 next)
+  (trace next g)
+  (block-at tui-b.block 1 g)
+  g)
+```
+
+`block-at` is a compiler primitive operator over the linked block list. `trace`
+is also a compiler primitive operator; direction defaults to upstream, and
+`(trace next :downstream g)` follows outgoing semantic graph edges. Rendering is
+not part of propagation: trace propagators produce graph data, and the TUI/view
+layer renders graph values with Vijual stress-majorization layout.
+
+In the TUI, an appended source block normally gets a generated output block
+immediately after it. A second instance can use a network declared by the first
+instance, trace a local application cell, and write the graph into its generated
+output block with normal compiler-2 code:
+
+```clojure
+(let-cell [next g]
+  (inc1 4 next)
+  (trace next g)
+  (block-at tui-b.block 1 g)
+  g)
+```
+
+There are also installed traces for reactive inspection. An installed trace
+stores a tracing propagator with a clock/epoch cell. The epoch ticks on the
+configured interval, so downstream traces can expand as the aggregate semantic
+graph grows.
+
+Useful commands:
+
+```bash
+clojure -M -m graph.compiler-2-semantic-repl \
+'(let-cell [same next] ((network [x] [same next] (<-> x same) (<-> (+ x 1) next)) 4 same next) next)'
+
+clojure -M -m graph.compiler-2-runtime-server server 45555
+
+clojure -M -m graph.compiler-2-runtime-server request 45555 \
+'{:op :compile/source :source "(let-cell [same next] ((network [x] [same next] (<-> x same) (<-> (+ x 1) next)) 4 same next) next)"}'
+
+clojure -M -m graph.compiler-2-runtime-server graph 45555
+clojure -M -m graph.compiler-2-runtime-server trace 45555 next
+
+clojure -M -m graph.compiler-2-runtime-server request 45555 \
+'{:op :semantic/trace/install :label "next" :direction :upstream :interval-ms 5000}'
+
+clojure -M -m graph.compiler-2-tui 45555 tui-1
+```
 
 ## Parallel GUR Linked-List Probe
 

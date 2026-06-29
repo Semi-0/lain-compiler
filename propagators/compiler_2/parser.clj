@@ -58,6 +58,10 @@
   (ast/network (symbol-vector params ":: params")
                (body-form body "::")))
 
+(defn- parse-cell [[params & body]]
+  (ast/network (symbol-vector params "cell params")
+               (body-form body "cell")))
+
 (defn- parse-network-form [[inputs outputs & body]]
   (ast/compound {:inputs (symbol-vector inputs "network inputs")
                  :output (symbol-vector outputs "network outputs")}
@@ -112,6 +116,7 @@
     (case (first form)
       let-cell (parse-let-cell (rest form))
       :compiler/network (parse-network (rest form))
+      cell (parse-cell (rest form))
       network (parse-network-form (rest form))
       def-net (parse-def-net (rest form))
       compound (parse-compound (rest form))

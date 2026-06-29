@@ -157,28 +157,6 @@
     (vector? output) output
     :else []))
 
-(defn- output-target-id
-  [out-id sym]
-  (h/stable-node-id :compiler-2 :closure-output out-id sym))
-
-(defn- output-targets
-  [output out-id]
-  (let [syms (output-symbols output)]
-    (cond
-      (empty? syms) [[nil out-id]]
-      (= 1 (count syms)) [[(first syms) out-id]]
-      :else (mapv (fn [sym] [sym (output-target-id out-id sym)]) syms))))
-
-(defn- structural-output-effects
-  [network out-id targets]
-  (if (<= (count targets) 1)
-    []
-    (-> (reduce (fn [ctx [sym target-id]]
-                  (i/slot ctx sym target-id out-id))
-                (i/context network [:compiler-2 :multi-output out-id])
-                targets)
-        i/effects)))
-
 (defn- body-env
   [lexical-env inputs output-targets input-ids]
   (let [base-env (reduce (fn [scoped-env [sym id]]
@@ -310,6 +288,22 @@
                                       inner-inputs
                                       (into (:props state') adapter-props))))))))
 
+(defn- closure-call-plan
+  [closure-info arg-ids out-id]
+  (let [input-count (count (closure-value/closure-inputs closure-info))
+        output-syms (output-symbols (closure-value/closure-output closure-info))
+        output-count (count output-syms)
+        arg-ids (vec arg-ids)]
+    (if (pos? output-count)
+      (when (= (count arg-ids) (+ input-count output-count))
+        {:input-ids (subvec arg-ids 0 input-count)
+         :targets (mapv vector
+                        output-syms
+                        (subvec arg-ids input-count))})
+      (when (= (count arg-ids) input-count)
+        {:input-ids arg-ids
+         :targets [[nil out-id]]}))))
+
 (defn- closure-application-messages
   [closure-id args-id _scheduled-arg-ids out-id network]
   (let [closure-cv (h/strongest-or-nothing network closure-id)
@@ -319,28 +313,28 @@
         materialized-args (when-not (value/unusable? arg-object)
                             (materialize-slot-object network args-id))
         arg-ids (when-not (value/unusable? arg-object)
-                  (argument-cell-ids materialized-args))
-        arg-values (mapv #(h/strongest-or-nothing network %) arg-ids)]
+                  (argument-cell-ids materialized-args))]
     (if (or (value/unusable? closure-cv)
             (value/unusable? materialized-closure)
             (not (closure-value/closure-info? materialized-closure))
-            (value/unusable? arg-object)
-            (value/any-unusable-values? arg-values))
+            (value/unusable? arg-object))
       []
-      (let [targets (output-targets (closure-value/closure-output
-                                     materialized-closure)
-                                    out-id)
-            output-ids (mapv second targets)
-            network* (reduce h/ensure-cell network output-ids)
-            structural-effects (structural-output-effects network out-id targets)
-            after-body (run-closure-body network*
-                                         materialized-closure
-                                         (vec arg-ids)
-                                         targets)]
-        {:effects structural-effects
-         :messages (externalized-output-messages after-body
-                                                 network*
-                                                 output-ids)}))))
+      (let [{:keys [input-ids targets]} (closure-call-plan materialized-closure
+                                                           arg-ids
+                                                           out-id)
+            input-values (mapv #(h/strongest-or-nothing network %) input-ids)]
+        (if (or (nil? targets)
+                (value/any-unusable-values? input-values))
+          []
+          (let [output-ids (mapv second targets)
+                network* (reduce h/ensure-cell network output-ids)
+                after-body (run-closure-body network*
+                                             materialized-closure
+                                             (vec input-ids)
+                                             targets)]
+            {:messages (externalized-output-messages after-body
+                                                     network*
+                                                     output-ids)}))))))
 
 (defn p:apply-closure
   "Apply a compiler-2 closure-info cell to argument cells and one output cell."
