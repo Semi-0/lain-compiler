@@ -197,6 +197,25 @@ blocks from those instance-local lists are still compiled into the same runtime
 env/net, so definitions from one instance can become part of the shared program
 state seen by later rebuilds.
 
+What exists now is a live runtime surface, not just a REPL transcript:
+
+- blocks are runtime cells in linked instance-local block lists;
+- `(def name)` creates a named free cell that later blocks can constrain;
+- `def-net` and `def-cell` extend the shared compiler environment and are
+  visible to later rebuilds, including other connected clients;
+- `block-at` lets compiler-2 code read and write block cells through the same
+  propagator network;
+- `trace` produces a semantic graph value that can itself be stored in a block
+  cell and rendered by the TUI;
+- trace blocks are recompiled after a full rebuild so they can react to later
+  upstream relationships;
+- trace traversal follows semantic nodes backed by the same runtime cell across
+  different source blocks, so a chain like `(+ 1 2) -> b -> a` appears when
+  tracing upstream of `a`;
+- TUI rendering uses Vijual stress-majorization with the current compiler-2
+  semantic opts: spacing `1.7`, stress iterations `200`, refine iterations
+  `200`.
+
 Normal blocks contain compiler-2 source. There are no runtime source special
 forms: authored block text always goes through compiler-2. Runtime reflection is
 available only through operators installed into the compiler environment. Each
@@ -256,6 +275,9 @@ normal compiler-2 code:
 and `(trace next :downstream g)` follows outgoing semantic graph edges.
 Rendering is not part of propagation: trace propagators produce graph data, and
 the TUI/view layer renders graph values with Vijual stress-majorization layout.
+Top-level `(trace a :upstream g)` traces the semantic label `"a"` rather than
+only the local input cell of the trace expression. Concrete cell tracing remains
+available through explicit trace requests at the runtime API boundary.
 
 There are also installed traces for reactive inspection. An installed trace
 stores a tracing propagator with a clock/epoch cell. The epoch ticks on the
@@ -349,6 +371,9 @@ look correct locally while losing semantic identity or provenance.
 | fixed | Default arithmetic unwraps `scope-source` / dependency values. | `(+ scoped-x 1)` can lose scope/provenance. | Make the default primitive env provenance-aware or explicitly use the contextual primitive wrapper. | `compile-2-default-arithmetic-preserves-operand-dependencies`. |
 | fixed | Runtime output/block copy and generated-block reset bridge. | Display block maintenance can look like semantic program flow. | Blocks are dumb cells; users connect values to blocks with compiler primitives like `block-at`. | `cross-session-block-at-writes-only-target-block`, `tui-view-is-monotone-linked-blocks`. |
 | fixed | `semantic-trace` value-label fallback. | Equal values can conflate unrelated cells. | Trace by cell id or explicit label only. | `semantic-trace-does-not-target-by-equal-value`. |
+| fixed | Per-block semantic graph ids collide. | Later trace blocks can overwrite labels from earlier expression graphs, hiding constants like `1` in `(<-> (+ 1 2) a)`. | Namespace semantic graph ids per source block before graph union. | `submitted-trace-keeps-upstream-literal-constants`. |
+| fixed | Trace traversal treats same runtime cell in different blocks as unrelated nodes. | Tracing upstream of `a` through `b -> a` misses later upstream edges into `b`. | Preserve all semantic-node aliases per runtime cell and expand traversal through alias-equivalent nodes. | `trace-block-reacts-through-intermediate-cell-chain`. |
+| fixed | TUI trace blocks compile before the complete runtime semantic graph exists. | `(trace a :upstream g)` can stay empty when upstream relations are added later. | Recompile trace source blocks after the full source-block rebuild pass and seed the stable runtime graph cell with the accumulated graph. | `trace-block-reacts-to-later-upstream-relationships`. |
 | open | Layered/generic procedure materialization. | Other procedure systems duplicate the same activation-local materialization pattern. | Later shared application substrate after compiler-2 closure application is stable. | Shared substrate tests, not part of this slice. |
 
 ## Lexical Environments
