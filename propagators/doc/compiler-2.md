@@ -212,6 +212,8 @@ What exists now is a live runtime surface, not just a REPL transcript:
 - trace traversal follows semantic nodes backed by the same runtime cell across
   different source blocks, so a chain like `(+ 1 2) -> b -> a` appears when
   tracing upstream of `a`;
+- clients can communicate through block cells by writing values or graph traces
+  into another client's block with `block-at` and `instance`;
 - TUI rendering uses Vijual stress-majorization with the current compiler-2
   semantic opts: spacing `1.7`, stress iterations `200`, refine iterations
   `200`.
