@@ -41,6 +41,9 @@ until they have semantics different from normal application.
 
 1. let
 
+(def <cell-name>)
+(def <cell-name> <expr>/<cell>)
+
 (let-cell [<cell>] <body>)
 
 ;; clojure like expr

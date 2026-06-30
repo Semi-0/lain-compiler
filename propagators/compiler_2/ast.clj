@@ -69,6 +69,17 @@
                output-slot output
                body-slot (ast body)}))
 
+(defn def* [name body]
+  (ast-object (cond-> {type-slot :def
+                       name-slot name}
+                (some? body) (assoc body-slot (ast body)))))
+
+(defn def-cell [name inputs body]
+  (ast-object {type-slot :def-cell
+               name-slot name
+               inputs-slot (vec inputs)
+               body-slot (ast body)}))
+
 (defn ast [x]
   (cond
     (ast-node? x) (obj/compound-object x)

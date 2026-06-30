@@ -115,9 +115,8 @@ A compiler-2 closure cell stores a compound object, not a
 ```
 
 The lexical environment is also attached with `compound-object/p:slot` under
-`:closure/env`. This keeps closure data slot-backed and lets application
-materialize the current declared topology instead of relying on a stale direct
-map read.
+`:closure/env`. This keeps closure data slot-backed while application dispatch
+uses the retained closure value and scheduled argument cell ids directly.
 
 Declaration and evaluation stay separate:
 
@@ -159,9 +158,8 @@ At activation time `p:apply-application`:
 
 For zero-output closure values, the closure application path:
 
-1. materializes closure slot topology for the operator closure cell
-2. waits while the closure value, argument object, or argument values are
-   unusable
+1. reads the retained closure value and scheduled argument cell ids
+2. waits while the closure value or required input argument values are unusable
 3. creates one activation network containing:
    - input boundary avatars
    - an output boundary avatar
@@ -171,7 +169,9 @@ For zero-output closure values, the closure application path:
 5. diffs only the inner output avatar back to the outer output cell
 
 This is the boundary that prevents inner local variables from writing to outer
-cells except through the declared output/result.
+cells except through the declared output/result. The result-to-output adapter is
+a direct propagator link from the body result cell to the boundary output avatar;
+it no longer materializes host compound records.
 
 For declared-output network values, the runtime first splits application
 applicants into input cells and output cells. Only input cells must have values
@@ -195,45 +195,67 @@ TUI/socket clients can connect to that same runtime. Each client instance owns
 its own block list and view state; it is not a shared document UI. Authored
 blocks from those instance-local lists are still compiled into the same runtime
 env/net, so definitions from one instance can become part of the shared program
-state seen by later rebuilds. Generated output blocks are not compiled unless
-the user edits them.
+state seen by later rebuilds.
 
 Normal blocks contain compiler-2 source. There are no runtime source special
 forms: authored block text always goes through compiler-2. Runtime reflection is
 available only through operators installed into the compiler environment. Each
-client block list is bound as `<client-id>.block`.
+client instance is bound by client id, and `%` is bound to the instance that owns
+the block currently being compiled.
 
 ```clojure
 (let-cell [v]
-  (block-at tui-a.block 1 v)
-  (block-at tui-b.block 1 v)
+  (block-at % 1 v)
+  (block-at (instance tui-b) 1 v)
   v)
 
 (let-cell [next g]
   (inc1 4 next)
   (trace next g)
-  (block-at tui-b.block 1 g)
+  (block-at (instance tui-b) 1 g)
   g)
 ```
 
-`block-at` is a compiler primitive operator over the linked block list. `trace`
-is also a compiler primitive operator; direction defaults to upstream, and
-`(trace next :downstream g)` follows outgoing semantic graph edges. Rendering is
-not part of propagation: trace propagators produce graph data, and the TUI/view
-layer renders graph values with Vijual stress-majorization layout.
+`block-at` is a compiler primitive operator over an instance's linked block
+list. Blocks are dumb cells: text, graph values, contradictions, and `nothing`
+are displayed directly from the block cell. No runtime path creates generated
+output blocks or copies compiler results into display blocks.
 
-In the TUI, an appended source block normally gets a generated output block
-immediately after it. A second instance can use a network declared by the first
-instance, trace a local application cell, and write the graph into its generated
-output block with normal compiler-2 code:
+For REPL ergonomics, a normal expression block with a following block is compiled
+with an implicit language-level output relation to that following block. Typing:
+
+```clojure
+(+ 1 2)
+```
+
+behaves like:
+
+```clojure
+(let-cell [out]
+  (<-> (+ 1 2) out)
+  (block-at % 1 out)
+  out)
+```
+
+Top-level `def-net` blocks are not wrapped, so definitions still extend the
+growing compiler environment rather than being hidden inside a local cell scope.
+
+A second instance can use a network declared by the first instance, trace a
+local application cell, and write the graph into one of its own blocks with
+normal compiler-2 code:
 
 ```clojure
 (let-cell [next g]
   (inc1 4 next)
   (trace next g)
-  (block-at tui-b.block 1 g)
+  (block-at (instance tui-b) 1 g)
   g)
 ```
+
+`trace` is also a compiler primitive operator; direction defaults to upstream,
+and `(trace next :downstream g)` follows outgoing semantic graph edges.
+Rendering is not part of propagation: trace propagators produce graph data, and
+the TUI/view layer renders graph values with Vijual stress-majorization layout.
 
 There are also installed traces for reactive inspection. An installed trace
 stores a tracing propagator with a clock/epoch cell. The epoch ticks on the
@@ -309,11 +331,25 @@ retained application/closure data.
 
 The prototype boundary is still real. Compiler-2 should not yet assume a final
 general recursion substrate for all user code, automatic GC of accumulated GUR
-frames, dynamic dispatch over arbitrary AST operators, or removal of the current
-closure-application materialization bridge. Those are migration targets. The
-safe next step is to incrementally replace hard-coded compiler-2 probes with
-GUR-backed declaration traversal and lexical accessor construction while keeping
-existing compiler behavior green.
+frames, or dynamic dispatch over arbitrary AST operators. Those are migration
+targets. The safe next step is to incrementally replace hard-coded compiler-2
+probes with GUR-backed declaration traversal and lexical accessor construction
+while keeping existing compiler behavior green.
+
+## Semantic Shortcut Ledger
+
+This ledger is the cleanup order for compiler-2 shortcuts that make propagation
+look correct locally while losing semantic identity or provenance.
+
+| Status | Shortcut | Symptom | Propagator-native replacement | Proving test |
+| --- | --- | --- | --- | --- |
+| fixed | `compiler_2.application/materialize-slot-object` in closure application | Closure calls inspect host-materialized closure/argument records, which can collapse accessor identity and make traces miss the applied body. | Use retained closure/application slots and argument cell ids; install only the activation topology when closure shape is known. | `compile-2-application-output-adapter-is-not-materializing`, nested and late compiler-2 application tests. |
+| fixed | Runtime `trace` closes over a per-block graph sidecar. | `(trace out g)` can trace block plumbing instead of the runtime env graph. | Bind one stable runtime semantic graph cell in the compiler env and have `trace` read it. | `block-language-traces-def-net-application-dependence-graph`. |
+| fixed | Runtime `block-at` uses host `head-id->blocks` lookup. | Cross-session block access depends on runtime maps rather than linked block cells. | Implement indexed linked-list access as a primitive propagator installed through compiler-2 env. | `cross-session-block-at-writes-only-target-block`. |
+| fixed | Default arithmetic unwraps `scope-source` / dependency values. | `(+ scoped-x 1)` can lose scope/provenance. | Make the default primitive env provenance-aware or explicitly use the contextual primitive wrapper. | `compile-2-default-arithmetic-preserves-operand-dependencies`. |
+| fixed | Runtime output/block copy and generated-block reset bridge. | Display block maintenance can look like semantic program flow. | Blocks are dumb cells; users connect values to blocks with compiler primitives like `block-at`. | `cross-session-block-at-writes-only-target-block`, `tui-view-is-monotone-linked-blocks`. |
+| fixed | `semantic-trace` value-label fallback. | Equal values can conflate unrelated cells. | Trace by cell id or explicit label only. | `semantic-trace-does-not-target-by-equal-value`. |
+| open | Layered/generic procedure materialization. | Other procedure systems duplicate the same activation-local materialization pattern. | Later shared application substrate after compiler-2 closure application is stable. | Shared substrate tests, not part of this slice. |
 
 ## Lexical Environments
 

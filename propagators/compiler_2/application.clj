@@ -1,8 +1,8 @@
 (ns propagators.compiler-2.application
   "Application propagator for compiler-2 network closures.
 
-  Closure cells are data. This namespace owns runtime application: materialize
-  closure slots, bind arguments into an activation-local environment, compile the
+  Closure cells are data. This namespace owns runtime application: bind
+  arguments into an activation-local environment, compile the
   body into a transient activation network, run it, and emit only the declared
   output diff back to the outer network.
   "
@@ -17,86 +17,13 @@
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.helpers.task-queue :as tq]
-            [propagators.install :as i]
             [propagators.message :refer [message]]
             [propagators.network :as net]
-            [propagators.network-builder :as nb]
-            [propagators.propagator :as prop]))
+            [propagators.propagator :as prop]
+            [propagators.stdlib.prop :as stdlib-prop]))
 
 (def apply-closure-props-key :compiler-2/apply-closure-props)
 (def apply-application-props-key :compiler-2/apply-application-props)
-
-(defn- copy-outer-cell
-  [n outer-net id]
-  (cond
-    (contains? (net/net-env n) id)
-    n
-
-    (contains? (net/net-env outer-net) id)
-    (nb/install-cell n
-                     id
-                     (net/network-cell-content outer-net id)
-                     (net/network-cell-strongest outer-net id))
-
-    :else
-    (h/ensure-cell n id)))
-
-(defn- install-declared-slot
-  [n collection-id [slot-key parent->declaration]]
-  (reduce
-   (fn [[acc prop-ids] parent-id]
-     (let [[prop-id acc'] ((obj/p:legacy-slot slot-key parent-id collection-id) acc)]
-       [acc' (conj prop-ids prop-id)]))
-   [n []]
-   (sort-by pr-str (keys parent->declaration))))
-
-(defn materialize-slot-object
-  "Evaluate declared slot topology for one compound object in a local frame."
-  [outer-net collection-id]
-  (let [raw-value (h/strongest-or-nothing outer-net collection-id)
-        source-slots (when (obj/accessor-network? raw-value)
-                       (obj/accessor-source-slots raw-value))
-        source-value (if (seq source-slots)
-                       (obj/compound-object source-slots)
-                       raw-value)
-        decls (merge-with merge
-                          (obj/slot-declarations-for outer-net collection-id)
-                          (obj/accessor-declarations-for outer-net collection-id))]
-    (if (empty? decls)
-      source-value
-      (let [base-value (obj/compound-object source-value)
-            parent-ids (->> decls vals (mapcat keys) (sort-by pr-str) vec)
-            n0 (h/seed-cell net/empty-net collection-id base-value)
-            n1 (reduce #(copy-outer-cell %1 outer-net %2) n0 parent-ids)
-            [slot-net prop-ids]
-            (reduce
-             (fn [[acc prop-ids] declaration]
-               (let [[acc' prop-ids'] (install-declared-slot acc
-                                                             collection-id
-                                                             declaration)]
-                 [acc' (into prop-ids prop-ids')]))
-             [n1 []]
-             (sort-by (comp pr-str key) decls))
-            materialized (nb/run-propagators slot-net prop-ids)]
-        (h/strongest-or-nothing materialized collection-id)))))
-
-(defn- accessor-value-parent-ids
-  [v]
-  (if (obj/accessor-network? v)
-    (->> (obj/accessor-slot-keys v)
-         (mapcat #(obj/accessor-parent-ids v %)))
-    []))
-
-(defn- materialization-parent-ids
-  [outer-net collection-id]
-  (let [raw-value (h/strongest-or-nothing outer-net collection-id)
-        decls (merge-with merge
-                          (obj/slot-declarations-for outer-net collection-id)
-                          (obj/accessor-declarations-for outer-net collection-id))]
-    (->> (concat (accessor-value-parent-ids raw-value)
-                 (mapcat keys (vals decls)))
-         distinct
-         vec)))
 
 (defn- inner->outer-boundary-map
   [network]
@@ -116,38 +43,14 @@
               (env/externalize-env closure-env
                                    (inner->outer-boundary-map network)))))))
 
-(defn- snapshot-accessor-output
-  [v]
-  (if (obj/accessor-network? v)
-    (obj/compound-object
-     (into {}
-           (keep (fn [slot-key]
-                   (let [slot-value (obj/slot-value v slot-key)]
-                     (when-not (value/unusable? slot-value)
-                       [slot-key slot-value]))))
-           (obj/accessor-slot-keys v)))
-    v))
-
 (defn- externalize-output-value
   [v network]
   (cond
     (closure-value/closure-info? v)
     (externalize-closure-value v network)
 
-    (obj/accessor-network? v)
-    (snapshot-accessor-output v)
-
     :else
     v))
-
-(defn- argument-cell-ids
-  [arg-object]
-  (let [arg-object (obj/compound-object arg-object)
-        count-value (obj/slot-value arg-object :count)]
-    (if (number? count-value)
-      (mapv #(obj/slot-value arg-object %) (range count-value))
-      (mapv #(obj/slot-value arg-object %)
-            (sort-by pr-str (obj/public-slot-keys arg-object))))))
 
 (defn- output-symbols
   [output]
@@ -178,41 +81,10 @@
    body-env
    state))
 
-(defn- output-adapter-messages
-  [current-net result-id out-inner]
-  (let [result-value (materialize-slot-object current-net result-id)]
-    (if (value/unusable? result-value)
-      []
-      [(message out-inner
-                (externalize-output-value result-value current-net))])))
-
-(defn- output-adapter-wakeup-effects
-  [current-net result-id out-inner]
-  (let [parent-ids (materialization-parent-ids current-net result-id)]
-    (if (empty? parent-ids)
-      []
-      (-> (i/context current-net
-                     [:compiler-2 :output-adapter result-id out-inner parent-ids])
-          (i/prop :materialize
-                  (into [result-id] parent-ids)
-                  []
-                  (fn [_inputs _outputs network]
-                    (output-adapter-messages network result-id out-inner)))
-          i/effects))))
-
-(defn- output-adapter
-  [result-id out-inner]
-  (prop/construct-propagator
-   (fn [_inputs _outputs current-net]
-     {:effects (output-adapter-wakeup-effects current-net result-id out-inner)
-      :messages (output-adapter-messages current-net result-id out-inner)})
-   [result-id]
-   [out-inner]))
-
 (defn- install-output-adapter
   [n result-id out-inner]
   (if (and result-id (not= result-id out-inner))
-    (let [[prop-id n'] ((output-adapter result-id out-inner) n)]
+    (let [[prop-id n'] ((stdlib-prop/id result-id out-inner) n)]
       [n' [prop-id]])
     [n []]))
 
@@ -305,21 +177,14 @@
          :targets [[nil out-id]]}))))
 
 (defn- closure-application-messages
-  [closure-id args-id _scheduled-arg-ids out-id network]
+  [closure-id _args-id scheduled-arg-ids out-id network]
   (let [closure-cv (h/strongest-or-nothing network closure-id)
-        arg-object (h/strongest-or-nothing network args-id)
-        materialized-closure (when-not (value/unusable? closure-cv)
-                               (materialize-slot-object network closure-id))
-        materialized-args (when-not (value/unusable? arg-object)
-                            (materialize-slot-object network args-id))
-        arg-ids (when-not (value/unusable? arg-object)
-                  (argument-cell-ids materialized-args))]
+        closure-info closure-cv
+        arg-ids (vec scheduled-arg-ids)]
     (if (or (value/unusable? closure-cv)
-            (value/unusable? materialized-closure)
-            (not (closure-value/closure-info? materialized-closure))
-            (value/unusable? arg-object))
+            (not (closure-value/closure-info? closure-info)))
       []
-      (let [{:keys [input-ids targets]} (closure-call-plan materialized-closure
+      (let [{:keys [input-ids targets]} (closure-call-plan closure-info
                                                            arg-ids
                                                            out-id)
             input-values (mapv #(h/strongest-or-nothing network %) input-ids)]
@@ -329,7 +194,7 @@
           (let [output-ids (mapv second targets)
                 network* (reduce h/ensure-cell network output-ids)
                 after-body (run-closure-body network*
-                                             materialized-closure
+                                             closure-info
                                              (vec input-ids)
                                              targets)]
             {:messages (externalized-output-messages after-body

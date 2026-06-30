@@ -75,6 +75,25 @@
                (symbol-vector outputs "def-net outputs")
                (body-form body "def-net")))
 
+(defn- parse-def [[name expr & more]]
+  (when-not (symbol? name)
+    (parse-error "def name must be a symbol" {:name name}))
+  (when (seq more)
+    (parse-error "def expects a name and optional expression"
+                 {:name name :expr expr :extra more}))
+  (ast/def* name (when (some? expr)
+                   (parse-form expr))))
+
+(defn- parse-def-cell [[name inputs & body]]
+  (when-not (symbol? name)
+    (parse-error "def-cell name must be a symbol" {:name name}))
+  (when (nil? inputs)
+    (parse-error "def-cell expects a name, input vector, and body"
+                 {:name name}))
+  (ast/def-cell name
+                (symbol-vector inputs "def-cell inputs")
+                (body-form body "def-cell")))
+
 (defn- parse-compound-spec [spec]
   (cond
     (map? spec)
@@ -119,6 +138,8 @@
       cell (parse-cell (rest form))
       network (parse-network-form (rest form))
       def-net (parse-def-net (rest form))
+      def (parse-def (rest form))
+      def-cell (parse-def-cell (rest form))
       compound (parse-compound (rest form))
       app-> (removed-form form)
       do (removed-form form)

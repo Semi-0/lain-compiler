@@ -86,6 +86,16 @@
       scope-source/unwrap
       dependency/unwrap))
 
+(declare dependency-sources)
+
+(defn- wrap-primitive-result
+  [result arg-values]
+  (let [sources (apply set/union #{} (map dependency-sources arg-values))]
+    (if (or (empty? sources)
+            (value/unusable? result))
+      result
+      (dependency/dependency-value result sources))))
+
 (defn primitive-operator
   "Compile-2-local primitive wrapper that waits for partial inputs."
   [f]
@@ -97,10 +107,15 @@
                (fn [_inputs _outputs current-net]
                 (let [values (mapv #(unwrap-compiler-value
                                       (net/network-cell-strongest current-net %))
-                                   arg-ids)]
+                                     arg-ids)]
                   (if (apply value/any-unusable-values? values)
                     []
-                    [(message out-id (apply f values))]))))
+                    [(message out-id
+                              (wrap-primitive-result (apply f values)
+                                                     (mapv #(net/network-cell-strongest
+                                                             current-net
+                                                             %)
+                                                           arg-ids)))]))))
               arg-ids
               [out-id])
              network)]
@@ -114,7 +129,12 @@
                             arg-ids)]
            (if (apply value/any-unusable-values? values)
              []
-             [(message out-id (apply f values))]))))}))
+             [(message out-id
+                       (wrap-primitive-result (apply f values)
+                                              (mapv #(net/network-cell-strongest
+                                                      current-net
+                                                      %)
+                                                    arg-ids)))]))))}))
 
 (defn- dependency-sources
   [v]
