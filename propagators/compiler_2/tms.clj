@@ -6,7 +6,7 @@
             [propagators.compiler-2.helpers :as h]
             [propagators.datastructures.dependency :as dependency]
             [propagators.datastructures.scope-source :as scope-source]
-            [propagators.datastructures.tms :as tms]
+            [propagators.datastructures.tms.distributed :as tms]
             [propagators.message :refer [message message-id message-value]]
             [propagators.network :as net]
             [propagators.propagator :as prop]))

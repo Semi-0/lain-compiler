@@ -45,11 +45,57 @@
               (env/externalize-env closure-env
                                    (inner->outer-boundary-map network)))))))
 
+(declare cell-content-or-nothing)
+
+(defn- activation-cell-value
+  [network id]
+  (let [content (cell-content-or-nothing network id)]
+    (if (value/unusable? content)
+      (h/strongest-or-nothing network id)
+      content)))
+
+(defn- single-slot-value
+  [values]
+  (reduce (fn [acc v]
+            (cond
+              (value/unusable? acc) v
+              (= acc v) acc
+              :else (reduced value/contradiction)))
+          value/nothing
+          values))
+
+(defn- externalize-accessor-value
+  [v network]
+  (if-not (obj/accessor-network? v)
+    v
+    (let [slot-map
+          (into {}
+                (keep
+                 (fn [slot-key]
+                   (let [parent-values
+                         (->> (obj/accessor-parent-ids v slot-key)
+                              (filter #(contains? (net/net-env network) %))
+                              (map #(activation-cell-value network %))
+                              (remove value/unusable?))
+                         slot-value
+                         (if (seq parent-values)
+                           (single-slot-value parent-values)
+                           (when (obj/accessor-source-slot-present? v slot-key)
+                             (obj/accessor-source-slot-value v slot-key)))]
+                     (when-not (value/unusable? slot-value)
+                       [slot-key
+                        (externalize-accessor-value slot-value network)]))))
+                (obj/accessor-slot-keys v))]
+      (obj/compound-object slot-map))))
+
 (defn- externalize-output-value
   [v network]
   (cond
     (closure-value/closure-info? v)
     (externalize-closure-value v network)
+
+    (obj/accessor-network? v)
+    (externalize-accessor-value v network)
 
     :else
     v))

@@ -6,19 +6,19 @@
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.reducer :as compiler-reducer]
             [propagators.compiler-2.tms :as compiler-tms]
-            [propagators.datastructures.behavior :as behavior]
+            [propagators.datastructures.behavior.core :as behavior]
+            [propagators.datastructures.behavior.arithmetic :as behavior-arithmetic]
             [propagators.datastructures.behavior-algebra :as hist]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.dependency :as dependency]
             [propagators.datastructures.reducer-subnet :as reducer]
             [propagators.datastructures.scope-source :as scope-source]
-            [propagators.datastructures.tms :as tms]
+            [propagators.datastructures.tms.distributed :as tms]
             [propagators.message :refer [message]]
             [propagators.network :as net]
-            [propagators.network-builder :as nb]
-            [propagators.propagator :as prop]
-            [propagators.stdlib.arithmetic.behavior :as behavior-arithmetic]))
+            [propagators.propagator :as prop]))
 
 (defn- unwrap-compiler-value
   [v]
@@ -473,55 +473,6 @@
                          {:arg-ids arg-ids})))
        [(message out-id (behavior/empty-history-state))])}))
 
-(defn- closure-output-symbols
-  [output]
-  (cond
-    (nil? output) []
-    (symbol? output) [output]
-    (vector? output) output
-    :else []))
-
-(defn- closure-merge-arg-ids
-  [closure-info acc-id update-id out-id]
-  (let [inputs (closure-value/closure-inputs closure-info)
-        outputs (closure-output-symbols (closure-value/closure-output closure-info))]
-    (cond
-      (and (= 2 (count inputs)) (= 1 (count outputs)))
-      [acc-id update-id out-id]
-
-      (and (= 2 (count inputs)) (empty? outputs))
-      [acc-id update-id])))
-
-(defn- closure-merge-net
-  [closure-id closure-info]
-  (let [acc-id (h/stable-node-id :compiler-2/behavior-merge closure-id :acc)
-        update-id (h/stable-node-id :compiler-2/behavior-merge closure-id :update)
-        out-id (h/stable-node-id :compiler-2/behavior-merge closure-id :out)
-        closure-cell-id (h/stable-node-id :compiler-2/behavior-merge closure-id :closure)
-        args-id (h/stable-node-id :compiler-2/behavior-merge closure-id :args)
-        arg-ids (closure-merge-arg-ids closure-info acc-id update-id out-id)]
-    (when arg-ids
-      (let [n0 (-> net/empty-net
-                   (nb/install-cell acc-id)
-                   (nb/install-cell update-id)
-                   (nb/install-cell out-id)
-                   (nb/install-cell args-id)
-                   (nb/install-cell closure-cell-id closure-info closure-info))
-            [_prop-id n1] (((requiring-resolve
-                             'propagators.compiler-2.application/p:apply-closure)
-                            closure-cell-id
-                            args-id
-                            arg-ids
-                            out-id)
-                           n0)]
-        (-> n1
-            (net/assoc-net-dict-entry :acc acc-id)
-            (net/assoc-net-dict-entry :update update-id)
-            (net/assoc-net-dict-entry :out out-id)
-            (net/assoc-net-dict-entry behavior/reducer-id-key
-                                      [:behavior.reducer/compiler-2-closure
-                                       closure-id]))))))
-
 (defn- behavior-source-event-keys
   [source]
   (let [source* (obj/as-accessor-network source)
@@ -554,7 +505,13 @@
       [(message out-id value/contradiction)]
 
       :else
-      (if-let [merge-net (closure-merge-net closure-id closure-info)]
+      (if-let [merge-net (compiler-reducer/closure-merge-net
+                          closure-id
+                          closure-info
+                          {:seed [:compiler-2/behavior-merge closure-id]
+                           :reducer-id-key behavior/reducer-id-key
+                           :reducer-id [:behavior.reducer/compiler-2-closure
+                                        closure-id]})]
         (let [state (reducer/strongest
                      (reducer/reducer-subnet source merge-net init))
               source-keys* (behavior-source-event-keys source)
@@ -596,6 +553,29 @@
                            {:arg-ids arg-ids})))
          (behavior-closure-messages network source-id closure-id init-id out-id)))}))
 
+(defn behavior-cell-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[source-id init-id closure-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id fallback-id)]
+        (when-not (and source-id init-id closure-id out-id
+                       (<= 3 (count arg-ids) 4))
+          (throw (ex-info "behavior-cell expects source, init, reducer closure, and optional output"
+                          {:arg-ids arg-ids})))
+        [network [] out-id]))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 3 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[source-id init-id closure-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and source-id init-id closure-id out-id
+                        (<= 3 (count arg-ids) 4))
+           (throw (ex-info "behavior-cell expects source, init, reducer closure, and optional output"
+                           {:arg-ids arg-ids})))
+         (behavior-closure-messages network source-id closure-id init-id out-id)))}))
+
 (defn bind-behavior-operators
   [compiler-env]
   (-> compiler-env
@@ -619,12 +599,14 @@
                    (behavior-state-from-events-operator)
                    0)
       (env/bind-at 'behavior-retain-last (behavior-retain-last-operator) 0)
-      (env/bind-at 'behavior (behavior-operator) 0)))
+      (env/bind-at 'behavior (behavior-operator) 0)
+      (env/bind-at 'behavior-cell (behavior-cell-operator) 0)))
 
 (defn behavior-tms-env []
   (-> (obj/empty-compound-object)
       (env/set-depth 0)
       bind-behavior-operators
+      (env/bind-at 'p:slot (h/slot-operator) 0)
       (env/bind-at 'execute-sub-env (h/execute-sub-env-operator) 0)
       compiler-tms/bind-distributed-tms-operators
       (env/bind-at '<-> (h/bi-sync-operator) 0)))

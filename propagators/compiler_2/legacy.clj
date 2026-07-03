@@ -4,7 +4,7 @@
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
-            [propagators.datastructures.tms :as tms]
+            [propagators.datastructures.tms.legacy :as tms]
             [propagators.message :refer [message message-id message-value]]))
 
 (defn- activation-messages

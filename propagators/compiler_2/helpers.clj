@@ -10,13 +10,13 @@
             [propagators.datastructures.compound-object.network-slot :as network-slot]
             [propagators.datastructures.dependency :as dependency]
             [propagators.datastructures.scope-source :as scope-source]
-            [propagators.datastructures.tms :as tms]
+            [propagators.datastructures.tms.distributed :as tms]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.network-builder :as nb]
             [propagators.propagator :as prop]
-            [propagators.stdlib.arithmetic.behavior :as behavior-arithmetic])
+            [propagators.datastructures.behavior.arithmetic :as behavior-arithmetic])
   (:import [java.nio.charset StandardCharsets]
            [java.util UUID]))
 
@@ -136,6 +136,52 @@
                (throw (ex-info (str name " expects collection or value+collection")
                                {:arg-ids arg-ids})))]
          (slot-messages slot-key value-id collection-id network)))}))
+
+(defn- slot-key-messages
+  [network slot-key-id value-id collection-id]
+  (let [slot-key (net/network-cell-strongest network slot-key-id)]
+    (cond
+      (value/nothing? slot-key) []
+      (value/contradiction? slot-key) [(message value-id value/contradiction)
+                                       (message collection-id value/contradiction)]
+      :else (slot-messages slot-key value-id collection-id network))))
+
+(defn slot-operator
+  "Generic compiler-2 `p:slot`.
+
+  `(p:slot k coll)` reads slot `k` into the expression result.
+  `(p:slot k value coll)` connects `value` and `coll` bidirectionally."
+  []
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [arg-ids (vec arg-ids)
+            [slot-key-id value-id collection-id result-id]
+            (case (count arg-ids)
+              2 [(first arg-ids) out-id (second arg-ids) out-id]
+              3 [(first arg-ids) (second arg-ids) (nth arg-ids 2) (nth arg-ids 2)]
+              (throw (ex-info "p:slot expects key+collection or key+value+collection"
+                              {:arg-ids arg-ids})))]
+        (let [slot-key (net/network-cell-strongest network slot-key-id)]
+          (if (value/unusable? slot-key)
+            [network [] result-id]
+            (let [[id network'] ((obj/p:slot slot-key value-id collection-id)
+                                 network)]
+              [network' [id] result-id])))))
+    {output-selector-key
+     (fn [arg-ids fallback-id]
+       (if (= 3 (count arg-ids))
+         (nth (vec arg-ids) 2)
+         fallback-id))
+     application-activate-key
+     (fn [network _context-id arg-ids out-id]
+       (let [arg-ids (vec arg-ids)
+             [slot-key-id value-id collection-id]
+             (case (count arg-ids)
+               2 [(first arg-ids) out-id (second arg-ids)]
+               3 [(first arg-ids) (second arg-ids) (nth arg-ids 2)]
+               (throw (ex-info "p:slot expects key+collection or key+value+collection"
+                               {:arg-ids arg-ids})))]
+         (slot-key-messages network slot-key-id value-id collection-id)))}))
 
 (defn contextual-operator?
   [operator]
@@ -394,6 +440,7 @@
                        (if enabled? x value/nothing)))
                     0)
        (env/bind-at 'p:cons (cons-operator) 0)
+       (env/bind-at 'p:slot (slot-operator) 0)
        (env/bind-at 'p:car (accessor-operator :car obj/p:car "p:car") 0)
        (env/bind-at 'p:cdr (accessor-operator :cdr obj/p:cdr "p:cdr") 0)
        (env/bind-at 'cons (cons-operator) 0)
@@ -415,6 +462,7 @@
       (env/bind-at '- (behavior-operator :- core/-) 0)
       (env/bind-at '* (behavior-operator :* core/*) 0)
       (env/bind-at '/ (behavior-operator :/ core//) 0)
+      (env/bind-at 'p:slot (slot-operator) 0)
       (env/bind-at 'execute-sub-env (execute-sub-env-operator) 0)
       (env/bind-at '<-> (bi-sync-operator) 0)))
 
