@@ -305,6 +305,31 @@
       (is (= 2 (count (behavior/history-records closure-content))))
       (is (= 1 (behavior/summary-latest-time (strongest double-result f-id)))))))
 
+(deftest behavior-compiler-applies-closure-history-over-input-history
+  (testing "each retained closure version applies only where it overlaps inputs"
+    (let [input (behavior-view [(hist/point-record 0 10)
+                                (hist/point-record 1 20)]
+                               #{[:a 0] [:a 1]})
+          f-id (ids/new-node-id)
+          [a-id n1] (behavior-cell (nb/install-cell (behavior-net) f-id)
+                                   input)
+          compiled (behavior-compiler/compile-source
+                    "(f a)"
+                    (env-with {'f f-id 'a a-id})
+                    {:net n1})
+          empty-result (run-compiled compiled)
+          inc-closure (closure-behavior-from-source "(:: [x] (+ x 1))" 0)
+          double-closure (closure-behavior-from-source "(:: [x] (* x 2))" 1)
+          [inc-tasks n2] (seed-behavior-message empty-result f-id inc-closure)
+          inc-result (core/run-tasks inc-tasks n2)
+          [double-tasks n3] (seed-behavior-message inc-result
+                                                   f-id
+                                                   double-closure)
+          result-net (core/run-tasks double-tasks n3)]
+      (is (= [{:at 0 :value 11}
+              {:at 1 :value 40}]
+             (records (content result-net (:cell compiled))))))))
+
 (deftest behavior-compiler-same-input-sees-latest-closure-version
   (testing "the same already-declared application updates from closure v1 to v2"
     (let [input (behavior-view [(hist/point-record 6 :same-input)] #{[:a 6]})

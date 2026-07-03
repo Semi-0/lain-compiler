@@ -17,6 +17,7 @@
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.helpers.task-queue :as tq]
+            [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.propagator :as prop]
@@ -24,6 +25,7 @@
 
 (def apply-closure-props-key :compiler-2/apply-closure-props)
 (def apply-application-props-key :compiler-2/apply-application-props)
+(def execute-sub-env-props-key :compiler-2/execute-sub-env-props)
 
 (defn- inner->outer-boundary-map
   [network]
@@ -176,7 +178,7 @@
         {:input-ids arg-ids
          :targets [[nil out-id]]}))))
 
-(defn- closure-application-messages
+(defn closure-application-messages
   [closure-id _args-id scheduled-arg-ids out-id network]
   (let [closure-cv (h/strongest-or-nothing network closure-id)
         closure-info closure-cv
@@ -282,3 +284,100 @@
                                     apply-application-props-key
                                     (fnil conj #{})
                                     prop-id)]))))
+
+(defn- install-child-env-cell
+  [network parent-env-id child-env-id]
+  (reduce h/ensure-cell network [parent-env-id child-env-id]))
+
+(defn- compile-expr
+  [expr child-env network seed]
+  ((requiring-resolve 'propagators.compiler-2.core/g:compile)
+   expr
+   child-env
+   {:net network
+    :env child-env
+    :seed seed
+    :path []
+    :props []
+    :applications []}))
+
+(defn- cell-content-or-nothing
+  [network id]
+  (if (contains? (net/net-env network) id)
+    (net/network-cell-content network id)
+    value/nothing))
+
+(defn execute-sub-env-messages
+  [parent-env-id expr-id child-env-id out-id network]
+  (let [expr (h/strongest-or-nothing network expr-id)
+        parent-env (h/strongest-or-nothing network parent-env-id)]
+    (if (or (value/unusable? expr)
+            (value/unusable? parent-env))
+      []
+      (let [with-child (install-child-env-cell network
+                                               parent-env-id
+                                               child-env-id)
+            child-env (env/extend-env parent-env [:env/child child-env-id])
+            with-child (h/seed-cell with-child child-env-id child-env)]
+        (if (value/unusable? child-env)
+          []
+          (let [[state result] (compile-expr
+                                expr
+                                child-env
+                                with-child
+                                [:compiler-2/execute-sub-env
+                                 parent-env-id
+                                 expr-id
+                                 child-env-id
+                                 out-id])
+                result-id (env/binding-id result)
+                after-body (run-activation-network (:net state)
+                                                   []
+                                                   (:props state))
+                result-value (h/strongest-or-nothing after-body result-id)
+                result-content (cell-content-or-nothing after-body result-id)
+                output-content (if (value/unusable? result-content)
+                                 result-value
+                                 result-content)]
+            (cond-> []
+              (and (contains? (net/net-env network) child-env-id)
+                   (not (value/unusable? child-env)))
+              (conj (message child-env-id child-env))
+
+              (and result-id
+                   (contains? (net/net-env network) result-id)
+                   (not (value/unusable? result-content)))
+              (conj (message result-id result-content))
+
+              (not (value/unusable? output-content))
+              (conj (message out-id output-content)))))))))
+
+(defn p:execute-sub-env
+  "Compile and run one expression in a child compiler-2 env.
+
+  `watch-ids` is the minimal v1 reactivity hook: pass external cells that should
+  re-trigger this transient execution when their strongest values change.
+  "
+  ([parent-env-id expr-id out-id]
+   (p:execute-sub-env parent-env-id expr-id [] (ids/new-node-id) out-id))
+  ([parent-env-id expr-id child-env-id out-id]
+   (p:execute-sub-env parent-env-id expr-id [] child-env-id out-id))
+  ([parent-env-id expr-id watch-ids child-env-id out-id]
+   (let [watch-ids (vec watch-ids)
+         inputs (into [parent-env-id expr-id] watch-ids)
+         outputs [child-env-id out-id]
+         activate (fn [_inputs _outputs network]
+                    (execute-sub-env-messages parent-env-id
+                                              expr-id
+                                              child-env-id
+                                              out-id
+                                              network))]
+     (fn [network]
+       (let [network* (reduce h/ensure-cell network (into inputs outputs))
+             [prop-id n] ((prop/construct-propagator activate inputs outputs)
+                          network*)]
+         [prop-id
+          (net/update-net-dict-entry n
+                                     execute-sub-env-props-key
+                                     (fnil conj #{})
+                                     prop-id)])))))

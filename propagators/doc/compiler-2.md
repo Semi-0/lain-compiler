@@ -42,6 +42,13 @@ The current surface language is intentionally small:
 
 (def-net inc [x] [out]
   (<-> (+ x 1) out))
+
+(def apply-out
+  (premise-closure
+    (network [f x] [out]
+      (f x out))
+    premise-id
+    tms))
 ```
 
 `::` and `cell` are zero-output closure forms: applying them returns the
@@ -64,6 +71,61 @@ The call above supplies `x`, `same`, and `next` as applicants. The network body
 declares relationships among those cells. Returning `next` is a separate source
 expression; the network call does not synthesize a hidden result object with
 `same` / `next` slots.
+
+`premise-closure` is sugar for a premise-marked network operator. It produces a
+normal compiler-2 operator value, delegates application to the wrapped
+`network`, and emits TMS reducer-cell claim/premise facts for the declared
+output. The storage cell is explicit in v1:
+
+```clojure
+(let-cell [out]
+  (def p :definition/inc)
+  (def tms)
+  (def apply-out
+    (premise-closure
+      (network [f x] [out]
+        (f x out))
+      p
+      tms))
+  (def-net inc [x] [out]
+    (<-> (+ x 1) out))
+  (apply-out inc 4 out)
+  tms)
+```
+
+The sugar does not patch `p:apply-application`; it uses the ordinary primitive
+operator metadata path and the existing closure application helper. For
+declared-output networks, it marks the explicit output applicant, not the hidden
+application result cell.
+
+`distributed-premise-closure` is the distributed-TMS version of the same sugar.
+It takes a wrapped `network`, a premise cell, and an epoch cell. Application runs
+the wrapped closure against an internal output cell, then emits only the
+premise-marked distributed TMS update to the explicit output cell:
+
+```clojure
+(let-cell [x out]
+  (def value 5)
+  (def input-premise :premise/input)
+  (def definition-premise :definition/inc)
+  (def epoch0 0)
+  (premise-input value input-premise epoch0 x)
+  (def-net inc [x] [out]
+    (<-> (+ x 1) out))
+  (def apply-inc
+    (distributed-premise-closure
+      (network [f x] [out]
+        (f x out))
+      definition-premise
+      epoch0))
+  (apply-inc inc x out)
+  out)
+```
+
+Later `(premise-retract definition-premise epoch1 out)` or
+`(premise-retract input-premise epoch2 x)` adds new premise-state facts. Old
+claim facts remain in the output cell; distributed strongest projection returns
+`nothing` while the needed premise is inactive.
 
 ## Two-Stage Compilation Model
 

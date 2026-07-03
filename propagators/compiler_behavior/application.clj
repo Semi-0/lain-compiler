@@ -2,10 +2,12 @@
   "Behavior-valued application for the behavior compiler.
 
   Primitive behavior operators produce behavior messages directly. Closure
-  behavior values may retain prior closure-info versions; applying one uses the
-  latest closure-info payload while preserving that payload's lexical env/scope.
+  behavior values may retain prior closure-info versions; applying one uses
+  temporally overlapping closure/input history when available, with latest
+  closure application as the compatibility fallback.
   "
-  (:require [propagators.boundary :as boundary]
+  (:require [clojure.set :as set]
+            [propagators.boundary :as boundary]
             [propagators.cells.snapshot :refer [pop-inputs]]
             [propagators.cells.value :as value]
             [propagators.compiler-2.application-value :as application-value]
@@ -14,6 +16,7 @@
             [propagators.compiler-2.helpers :as h]
             [propagators.core :as core]
             [propagators.datastructures.behavior :as behavior]
+            [propagators.datastructures.behavior-algebra :as hist]
             [propagators.datastructures.compound-object :as obj]
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]
@@ -155,6 +158,77 @@
                        (tagged-source-keys :body body-view))
     :reducer (behavior-application-reducer-id app-id)}))
 
+(defn- record-history
+  [record]
+  (hist/records->history [record]))
+
+(defn- empty-history?
+  [history]
+  (empty? (hist/history-records history)))
+
+(defn- arg-slice-view
+  [closure-record arg-view]
+  (let [slice-history (hist/history-join
+                       (fn [_closure arg] arg)
+                       (record-history closure-record)
+                       (behavior/history arg-view))]
+    (when-not (or (value/contradiction? slice-history)
+                  (empty-history? slice-history))
+      (behavior/behavior-value
+       {:history slice-history
+        :source-keys (behavior/source-keys arg-view)
+        :reducer (behavior/reducer-id arg-view)}))))
+
+(defn- closure-slice-arg-views
+  [closure-record arg-views]
+  (let [slices (mapv #(arg-slice-view closure-record %) arg-views)]
+    (when-not (some nil? slices)
+      slices)))
+
+(defn- install-arg-view-cells
+  [network arg-views]
+  (reduce
+   (fn [{:keys [net arg-ids]} arg-view]
+     (let [arg-id (ids/new-node-id)]
+       {:net (nb/install-cell net
+                              arg-id
+                              arg-view
+                              (behavior/strongest-value arg-view))
+        :arg-ids (conj arg-ids arg-id)}))
+   {:net network :arg-ids []}
+   arg-views))
+
+(defn- run-closure-body-view
+  [network closure-info arg-views app-id]
+  (let [{:keys [net arg-ids]} (install-arg-view-cells network arg-views)
+        {:keys [net out-inner]} (run-closure-body net closure-info arg-ids app-id)]
+    (when out-inner
+      (behavior-view-or-nothing net out-inner))))
+
+(defn- combined-body-view
+  [body-views]
+  (behavior/behavior-value
+   {:history (apply hist/history-union (map behavior/history body-views))
+    :source-keys (apply set/union (map behavior/source-keys body-views))
+    :reducer behavior/event-history-reducer-id}))
+
+(defn- closure-history-body-view
+  [network operator-view arg-views app-id]
+  (let [body-views
+        (keep (fn [closure-record]
+                (let [closure-info (hist/record-value closure-record)
+                      arg-slices (closure-slice-arg-views closure-record
+                                                          arg-views)]
+                  (when (and (closure-value/closure-info? closure-info)
+                             arg-slices)
+                    (run-closure-body-view network
+                                           closure-info
+                                           arg-slices
+                                           app-id))))
+              (behavior/history-records operator-view))]
+    (when (seq body-views)
+      (combined-body-view body-views))))
+
 (defn- closure-behavior-messages
   [app-id operator-id args-id out-id network]
   (let [operator-view (behavior-view-or-nothing network operator-id)
@@ -174,8 +248,12 @@
                                                       closure-info
                                                       (vec arg-ids)
                                                       app-id)
-            body-view (when out-inner
-                        (behavior-view-or-nothing net out-inner))]
+            body-view (or (closure-history-body-view network
+                                                     operator-view
+                                                     arg-views
+                                                     app-id)
+                          (when out-inner
+                            (behavior-view-or-nothing net out-inner)))]
         (if (value/unusable? body-view)
           []
           [(message out-id
