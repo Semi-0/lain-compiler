@@ -480,9 +480,13 @@ clojure -M:wired/client -name A
 clojure -M:wired/xr
 ```
 
-`:wired/server` starts the shared compiler-2 runtime on the default port.
+`:wired/server` starts the shared compiler-2 runtime on the default port. When
+compiled code installs an `xr-io` propagator and it emits an XR launch effect,
+the server starts the XR/browser projection on demand against the same runtime
+session.
 `:wired/client` starts a TUI client against that runtime; `-name A` selects the
-client instance name. `:wired/xr` starts the browser/XR projection server.
+client instance name. `:wired/xr` starts a standalone browser/XR projection
+server for isolated XR testing.
 
 ## Parallel GUR Linked-List Probe
 
