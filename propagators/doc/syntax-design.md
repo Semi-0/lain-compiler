@@ -3,8 +3,8 @@ First compiler-2 prototype scope:
 - first slice: ordinary application, `let-cell`, `def-net`, `network`, `cell`,
   existing `::`, and existing `switch`.
 - sugar after that: Clojure-like `let`, `def-cell`, and `when`.
-- later: recursion syntax, compound data syntax, predicates, reflection, TMS,
-  behavior history APIs, IO, networking, and macros.
+- later: recursion syntax, compound data syntax, predicates, reflection, the
+  remaining closure/predicate behavior history APIs, IO, networking, and macros.
 - key reflective target: `compile` / `evaluate` should compile expressions into
   an isolated sub-env, so experiments can extend language behavior without
   mutating the core env.
@@ -30,6 +30,10 @@ Current checkpoint, 2026-07-03:
     network closure with reducer protocol inputs `[acc next]` and one output;
   - behavior merge closures reuse the generic compiler-2 reducer adapter, so the
     user-facing merge shape is the same as reducer-subnet: `acc`, `next`, `out`.
+  - seven behavior syntax operators are compiler-2-backed now:
+    `behavior`, `latest`, `last`, `history`, `history-take`, `history-drop`,
+    and `history-split-at`. `latest` and `last` return behavior values, so they
+    remain composable with behavior arithmetic.
 - Module organization:
   - compiler-facing behavior and distributed TMS operators live in
     `propagators.compiler-2.behavior` and `propagators.compiler-2.tms`;
@@ -45,8 +49,9 @@ Current checkpoint, 2026-07-03:
         (behavior-retain-last full 1 out)))
     (behavior-cell events (behavior-empty-state) retain-latest retained)
     ```
-  - the higher-level `behavior` / `last` / `history-*` syntax below remains a
-    design target, not the implemented compiler-2 surface;
+  - the closure/predicate history operators below remain design targets:
+    `history-reduce`, `history-map`, `history-filter`, `history-take-while`,
+    `history-drop-while`, `history-split-with`, and `history-split-by`;
   - fully pure low-level slot reducers should eventually reuse the
     accessor-preserving accumulating GUR/sub-env route. The current compiler-2
     behavior path proves `p:slot` access and simple slot writes in closures, but
@@ -58,9 +63,7 @@ Current checkpoint, 2026-07-03:
   - the same compiled behavior can be wrapped by distributed TMS, chained through
     another compiled network call, retracted to `nothing`, and brought back by a
     higher-epoch premise fact;
-  - `switch` in the behavior/TMS default env currently returns `nothing` in the
-    probe where a switched behavior value should produce `4`. This exposes a
-    gap between the first-slice syntax target and the behavior/TMS env bindings;
+  - `switch` and forward sync are covered in the behavior/TMS default env;
   - recursive syntax is not implemented. A self-recursive `def-net` currently
     compiles into a silent non-productive network whose result is `nothing`,
     instead of raising an explicit unsupported-recursion error.
@@ -231,6 +234,7 @@ TMS:
 
 Reactivity:
 (behavior <behavior-cell> <initial> <body>)
+(latest <behavior>)
 (last <behavior-cell> <index> <out>)
 (history <behavior-cell> <start> <end> <out>)
 (history-reduce <behavior-cell> <reducer-cell> <accumulator> <initial> <out>)
@@ -270,3 +274,6 @@ Search:
 
 10. macro extension
 (defmacro <macro-name> <args> <body>)
+
+11. projection
+(xr-io <graph-io> <receipt>)

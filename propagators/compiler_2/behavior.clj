@@ -576,13 +576,298 @@
                            {:arg-ids arg-ids})))
          (behavior-closure-messages network source-id closure-id init-id out-id)))}))
 
-(defn bind-behavior-operators
+(defn- record-time
+  [record]
+  (let [at (obj/slot-value record :at)]
+    (if (some? at)
+      at
+      (obj/slot-value record :from))))
+
+(defn- record-value
+  [record]
+  (obj/slot-value record :value))
+
+(defn- time-rank
+  [t]
+  (if (= :infinity t)
+    Long/MAX_VALUE
+    t))
+
+(defn- sorted-history-records
+  [behavior-value]
+  (sort-by (comp time-rank record-time)
+           (behavior/history-records behavior-value)))
+
+(defn- history-behavior-value
+  [source records]
+  (behavior/behavior-value
+   {:history (hist/records->history records)
+    :source-keys (behavior/source-keys source)
+    :reducer (behavior/reducer-id source)}))
+
+(defn- behavior-content-value
+  [network behavior-id]
+  (unwrap-compiler-value (net/network-cell-content network behavior-id)))
+
+(defn- latest-messages
+  [network behavior-id out-id]
+  (let [v (behavior-content-value network behavior-id)]
+    (cond
+      (value/nothing? v) []
+      (value/contradiction? v) [(message out-id value/contradiction)]
+      :else
+      (let [records (vec (sorted-history-records v))
+            selected (peek records)]
+        (cond
+          (nil? selected) []
+          :else [(message out-id (history-behavior-value v [selected]))])))))
+
+(defn latest-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[behavior-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id fallback-id)]
+        (when-not (and behavior-id out-id (<= 1 (count arg-ids) 2))
+          (throw (ex-info "latest expects behavior and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (latest-messages current-net behavior-id out-id))
+                [behavior-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 1 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[behavior-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and behavior-id out-id (<= 1 (count arg-ids) 2))
+           (throw (ex-info "latest expects behavior and optional output"
+                           {:arg-ids arg-ids})))
+         (latest-messages network behavior-id out-id)))}))
+
+(defn- last-messages
+  [network behavior-id index-id out-id]
+  (let [v (behavior-content-value network behavior-id)
+        index (unwrap-compiler-value (net/network-cell-strongest network index-id))]
+    (cond
+      (or (value/nothing? v)
+          (value/nothing? index)) []
+      (or (value/contradiction? v)
+          (value/contradiction? index)
+          (not (nat-int? index))) [(message out-id value/contradiction)]
+      :else
+      (let [records (vec (sorted-history-records v))
+            selected (nth records (core/- (count records) index 1) nil)]
+        (cond
+          (nil? selected) []
+          :else [(message out-id (history-behavior-value v [selected]))])))))
+
+(defn last-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[behavior-id index-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id fallback-id)]
+        (when-not (and behavior-id index-id out-id (<= 2 (count arg-ids) 3))
+          (throw (ex-info "last expects behavior, index, and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (last-messages current-net behavior-id index-id out-id))
+                [behavior-id index-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 2 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[behavior-id index-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and behavior-id index-id out-id (<= 2 (count arg-ids) 3))
+           (throw (ex-info "last expects behavior, index, and optional output"
+                           {:arg-ids arg-ids})))
+         (last-messages network behavior-id index-id out-id)))}))
+
+(defn- slice-records
+  [records start end]
+  (->> records
+       (drop start)
+       (take (max 0 (core/- end start)))))
+
+(defn- history-slice-messages
+  [slice-f network behavior-id arg-ids out-id]
+  (let [v (behavior-content-value network behavior-id)
+        args (mapv #(unwrap-compiler-value (net/network-cell-strongest network %))
+                   arg-ids)]
+    (cond
+      (or (value/nothing? v)
+          (some value/nothing? args)) []
+      (or (value/contradiction? v)
+          (some value/contradiction? args)
+          (not-every? nat-int? args)) [(message out-id value/contradiction)]
+      :else
+      (let [records (vec (sorted-history-records v))]
+        [(message out-id
+                  (history-behavior-value v (apply slice-f records args)))]))))
+
+(defn history-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[behavior-id start-id end-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id fallback-id)]
+        (when-not (and behavior-id start-id end-id out-id
+                       (<= 3 (count arg-ids) 4))
+          (throw (ex-info "history expects behavior, start, end, and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (history-slice-messages slice-records
+                                          current-net
+                                          behavior-id
+                                          [start-id end-id]
+                                          out-id))
+                [behavior-id start-id end-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 3 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[behavior-id start-id end-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and behavior-id start-id end-id out-id
+                        (<= 3 (count arg-ids) 4))
+           (throw (ex-info "history expects behavior, start, end, and optional output"
+                           {:arg-ids arg-ids})))
+         (history-slice-messages slice-records
+                                 network
+                                 behavior-id
+                                 [start-id end-id]
+                                 out-id)))}))
+
+(defn history-take-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[behavior-id count-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id fallback-id)]
+        (when-not (and behavior-id count-id out-id (<= 2 (count arg-ids) 3))
+          (throw (ex-info "history-take expects behavior, count, and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (history-slice-messages
+                   (fn [records n] (take n records))
+                   current-net behavior-id [count-id] out-id))
+                [behavior-id count-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 2 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[behavior-id count-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and behavior-id count-id out-id (<= 2 (count arg-ids) 3))
+           (throw (ex-info "history-take expects behavior, count, and optional output"
+                           {:arg-ids arg-ids})))
+         (history-slice-messages
+          (fn [records n] (take n records))
+          network behavior-id [count-id] out-id)))}))
+
+(defn history-drop-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[behavior-id count-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id fallback-id)]
+        (when-not (and behavior-id count-id out-id (<= 2 (count arg-ids) 3))
+          (throw (ex-info "history-drop expects behavior, count, and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (history-slice-messages
+                   (fn [records n] (drop n records))
+                   current-net behavior-id [count-id] out-id))
+                [behavior-id count-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 2 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[behavior-id count-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and behavior-id count-id out-id (<= 2 (count arg-ids) 3))
+           (throw (ex-info "history-drop expects behavior, count, and optional output"
+                           {:arg-ids arg-ids})))
+         (history-slice-messages
+          (fn [records n] (drop n records))
+          network behavior-id [count-id] out-id)))}))
+
+(defn- split-at-messages
+  [network behavior-id index-id out-id]
+  (let [v (behavior-content-value network behavior-id)
+        index (unwrap-compiler-value (net/network-cell-strongest network index-id))]
+    (cond
+      (or (value/nothing? v)
+          (value/nothing? index)) []
+      (or (value/contradiction? v)
+          (value/contradiction? index)
+          (not (nat-int? index))) [(message out-id value/contradiction)]
+      :else
+      (let [records (vec (sorted-history-records v))
+            [left right] (split-at index records)]
+        [(message out-id
+                  (obj/compound-object
+                   {:left (history-behavior-value v left)
+                    :right (history-behavior-value v right)}))]))))
+
+(defn history-split-at-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[behavior-id index-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id fallback-id)]
+        (when-not (and behavior-id index-id out-id (<= 2 (count arg-ids) 3))
+          (throw (ex-info "history-split-at expects behavior, index, and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (split-at-messages current-net behavior-id index-id out-id))
+                [behavior-id index-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 2 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[behavior-id index-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and behavior-id index-id out-id (<= 2 (count arg-ids) 3))
+           (throw (ex-info "history-split-at expects behavior, index, and optional output"
+                           {:arg-ids arg-ids})))
+         (split-at-messages network behavior-id index-id out-id)))}))
+
+(defn bind-behavior-construction-operators
   [compiler-env]
   (-> compiler-env
-      (env/bind-at '+ (stable-distributed-behavior-operator :+ core/+) 0)
-      (env/bind-at '- (stable-distributed-behavior-operator :- core/-) 0)
-      (env/bind-at '* (stable-distributed-behavior-operator :* core/*) 0)
-      (env/bind-at '/ (stable-distributed-behavior-operator :/ core//) 0)
       (env/bind-at 'behavior-point (behavior-point-operator) 0)
       (env/bind-at 'behavior-event (behavior-event-operator) 0)
       (env/bind-at 'behavior-empty-state (behavior-empty-state-operator) 0)
@@ -600,7 +885,22 @@
                    0)
       (env/bind-at 'behavior-retain-last (behavior-retain-last-operator) 0)
       (env/bind-at 'behavior (behavior-operator) 0)
-      (env/bind-at 'behavior-cell (behavior-cell-operator) 0)))
+      (env/bind-at 'behavior-cell (behavior-cell-operator) 0)
+      (env/bind-at 'latest (latest-operator) 0)
+      (env/bind-at 'last (last-operator) 0)
+      (env/bind-at 'history (history-operator) 0)
+      (env/bind-at 'history-take (history-take-operator) 0)
+      (env/bind-at 'history-drop (history-drop-operator) 0)
+      (env/bind-at 'history-split-at (history-split-at-operator) 0)))
+
+(defn bind-behavior-operators
+  [compiler-env]
+  (-> compiler-env
+      (env/bind-at '+ (stable-distributed-behavior-operator :+ core/+) 0)
+      (env/bind-at '- (stable-distributed-behavior-operator :- core/-) 0)
+      (env/bind-at '* (stable-distributed-behavior-operator :* core/*) 0)
+      (env/bind-at '/ (stable-distributed-behavior-operator :/ core//) 0)
+      bind-behavior-construction-operators))
 
 (defn behavior-tms-env []
   (-> (obj/empty-compound-object)
