@@ -2,7 +2,9 @@
   "Compatibility facade for compiler-2."
   (:require [propagators.compiler-2.application-value :as application-value]
             [propagators.compiler-2.closure-value :as closure-value]
-            [propagators.compiler-2.core :as core]))
+            [propagators.compiler-2.core :as core]
+            [propagators.compiler-2.tms-behavior :as tms-behavior]
+            [propagators.compiler-2.parser :as parser]))
 
 (def compiler-result-key core/compiler-result-key)
 (def compiler-props-key core/compiler-props-key)
@@ -38,6 +40,18 @@
   ([source] (core/compile-source source))
   ([source env] (core/compile-source source env))
   ([source env opts] (core/compile-source source env opts)))
+
+(defn behavior-tms-env []
+  (tms-behavior/behavior-tms-env))
+
+(defn compile-expr-with-behavior-tms
+  ([expr] (compile-expr-with-behavior-tms expr {}))
+  ([expr opts] (core/compile-expr expr (behavior-tms-env) opts)))
+
+(defn compile-source-with-behavior-tms
+  ([source] (compile-source-with-behavior-tms source {}))
+  ([source opts]
+   (compile-expr-with-behavior-tms (parser/parse-string source) opts)))
 
 (defn compiled-result [compiled-net]
   (core/compiled-result compiled-net))

@@ -113,6 +113,36 @@ Later `(premise-retract definition-premise epoch1 out)` or
 claim facts remain in the output cell; distributed strongest projection returns
 `nothing` while the needed premise is inactive.
 
+Repeated `def` / `def-net` / `def-cell` forms shadow the name with the newly
+compiled value cell. They do not reuse the old name cell. That means an earlier
+application keeps the operator cell it already referenced, while later
+applications see the new binding:
+
+```clojure
+(let-cell [out]
+  (def p-one :definition/plus-one)
+  (def p-ten :definition/plus-ten)
+  (def epoch0 0)
+  (def op
+    (premise-closure
+      (network [f x] [out] (f x out))
+      p-one
+      epoch0))
+  (op plus-one x out)
+  (def op
+    (premise-closure
+      (network [f x] [out] (f x out))
+      p-ten
+      epoch0))
+  (op plus-ten x out)
+  out)
+```
+
+The two applications emit separate distributed TMS claims because the
+premise-marked closure claim identity includes the premise. Retraction/bring-in
+of `p-one` and `p-ten` selects the active definition through distributed TMS
+projection.
+
 Centralized reducer-cell TMS is still available as legacy compatibility through
 `propagators.compiler-2.tms-behavior/legacy-central-tms-env` or the thin
 `helpers/legacy-central-tms-env` export. That path overrides `premise-closure`
@@ -145,6 +175,16 @@ Compiler 2 now has an explicit conceptual split:
 Today those two stages still happen in one `compile-source` / `compile-expr`
 call, but the data boundary is present. Every application gets an application
 IR cell, and one uniform application propagator is installed alongside it.
+
+`propagators.compiler-2.main/compile-source` remains the raw compiler-2 entry
+and uses `helpers/default-env`. To compile with behavior arithmetic plus
+distributed TMS primitives by default, use:
+
+```clojure
+(main/compile-source-with-behavior-tms source {:net n})
+```
+
+The matching AST entry is `main/compile-expr-with-behavior-tms`.
 
 The retained application object has slots:
 
@@ -271,8 +311,9 @@ What exists now is a live runtime surface, not just a REPL transcript:
 
 - blocks are runtime cells in linked instance-local block lists;
 - `(def name)` creates a named free cell that later blocks can constrain;
-- `def-net` and `def-cell` extend the shared compiler environment and are
-  visible to later rebuilds, including other connected clients;
+- `def`, `def-net`, and `def-cell` bind names to newly compiled value cells;
+  later definitions shadow earlier bindings instead of mutating the old name
+  cell;
 - `block-at` lets compiler-2 code read and write block cells through the same
   propagator network;
 - `trace` produces a semantic graph value that can itself be stored in a block
