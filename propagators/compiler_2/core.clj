@@ -17,8 +17,7 @@
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
-            [propagators.propagator :as prop]
-            [propagators.stdlib.prop :as stdlib-prop]))
+            [propagators.propagator :as prop]))
 
 (def compiler-result-key common/compiler-result-key)
 (def compiler-props-key common/compiler-props-key)
@@ -171,26 +170,6 @@
          (h/add-props [env-slot-prop]))
      (env/compound-binding closure-id)]))
 
-(defn- definition-binding
-  [state name role]
-  (if-let [existing (env/lookup (:env state) name)]
-    (if (env/binding-id existing)
-      [state existing]
-      (h/new-cell state role))
-    (h/new-cell state role)))
-
-(defn- sync-bindings
-  [state from-binding to-binding]
-  (let [from-id (env/binding-id from-binding)
-        to-id (env/binding-id to-binding)]
-    (if (= from-id to-id)
-      state
-      (let [[forward-prop n'] ((stdlib-prop/id from-id to-id) (:net state))
-            [backward-prop n''] ((stdlib-prop/id to-id from-id) n')]
-        (-> state
-            (assoc :net n'')
-            (h/add-props [forward-prop backward-prop]))))))
-
 (defmulti g:compile
   (fn [expr _env _state]
     (common/expression-kind expr)))
@@ -224,48 +203,41 @@
 
 (defmethod g:compile :def-net
   [expr _env state]
-  (let [[state' binding] (definition-binding state
-                                             (ast/name expr)
-                                             [:def-net (ast/name expr)])
-        state' (assoc state' :env (env/bind-local (:env state')
-                                                  (ast/name expr)
-                                                  binding))
-        [state'' closure-binding] (compile-network state'
+  (let [[state' closure-binding] (compile-network state
                                                    (ast/inputs expr)
                                                    (ast/output expr)
                                                    (ast/body expr))]
-    [(sync-bindings state'' closure-binding binding)
-     binding]))
+    [(assoc state' :env (env/bind-local (:env state')
+                                        (ast/name expr)
+                                        closure-binding))
+     closure-binding]))
 
 (defmethod g:compile :def
   [expr _env state]
-  (let [[state' binding] (definition-binding state
-                                             (ast/name expr)
-                                             [:def (ast/name expr)])
-        state' (assoc state' :env (env/bind-local (:env state')
-                                                  (ast/name expr)
-                                                  binding))]
-    (if-let [body (ast/body expr)]
-      (let [[state'' body-binding] (g:compile body
-                                              (:env state')
-                                              (h/child state' :body))]
-        [(sync-bindings state'' body-binding binding) binding])
-      [state' binding])))
+  (if-let [body (ast/body expr)]
+    (let [[state' body-binding] (g:compile body
+                                           (:env state)
+                                           (h/child state :body))]
+      [(assoc state' :env (env/bind-local (:env state')
+                                          (ast/name expr)
+                                          body-binding))
+       body-binding])
+    (let [[state' binding] (h/new-cell state [:def (ast/name expr)])]
+      [(assoc state' :env (env/bind-local (:env state')
+                                          (ast/name expr)
+                                          binding))
+       binding])))
 
 (defmethod g:compile :def-cell
   [expr _env state]
-  (let [[state' binding] (definition-binding state
-                                             (ast/name expr)
-                                             [:def-cell (ast/name expr)])
-        state' (assoc state' :env (env/bind-local (:env state')
-                                                  (ast/name expr)
-                                                  binding))
-        [state'' closure-binding] (compile-network state'
+  (let [[state' closure-binding] (compile-network state
                                                    (ast/inputs expr)
                                                    nil
                                                    (ast/body expr))]
-    [(sync-bindings state'' closure-binding binding)
-     binding]))
+    [(assoc state' :env (env/bind-local (:env state')
+                                        (ast/name expr)
+                                        closure-binding))
+     closure-binding]))
 
 (defmethod g:compile :application
   [expr _env state]
