@@ -608,5 +608,7 @@
       bind-behavior-operators
       (env/bind-at 'p:slot (h/slot-operator) 0)
       (env/bind-at 'execute-sub-env (h/execute-sub-env-operator) 0)
+      (env/bind-at 'switch (h/switch-operator) 0)
+      (env/bind-at '-> (h/sync-operator) 0)
       compiler-tms/bind-distributed-tms-operators
       (env/bind-at '<-> (h/bi-sync-operator) 0)))

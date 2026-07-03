@@ -1,6 +1,7 @@
 (ns propagators.compiler-2.main
   "Compatibility facade for compiler-2."
-  (:require [propagators.compiler-2.application-value :as application-value]
+  (:require [propagators.compiler-2.application :as application]
+            [propagators.compiler-2.application-value :as application-value]
             [propagators.compiler-2.behavior :as behavior]
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.core :as core]
@@ -64,3 +65,15 @@
 
 (defn p:compile-expr [expr-id env-id out-id]
   (core/p:compile-expr expr-id env-id out-id))
+
+(defn p:execute-sub-env
+  ([parent-env-id expr-id out-id]
+   (application/p:execute-sub-env parent-env-id expr-id out-id))
+  ([parent-env-id expr-id child-env-id out-id]
+   (application/p:execute-sub-env parent-env-id expr-id child-env-id out-id))
+  ([parent-env-id expr-id watch-ids child-env-id out-id]
+   (application/p:execute-sub-env parent-env-id
+                                  expr-id
+                                  watch-ids
+                                  child-env-id
+                                  out-id)))

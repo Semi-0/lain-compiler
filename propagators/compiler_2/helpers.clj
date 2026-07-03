@@ -393,6 +393,79 @@
       a-update (conj (message b a-update))
       b-update (conj (message a b-update)))))
 
+(defn- forward-sync-messages
+  [network a b]
+  (if-let [a-update (sync-update network a)]
+    [(message b a-update)]
+    []))
+
+(defn sync-operator []
+  (with-meta
+    (fn [network arg-ids _out-id]
+      (let [[a b] (vec arg-ids)]
+        (when-not (and a b (= 2 (count arg-ids)))
+          (throw (ex-info "-> expects exactly two arguments" {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (forward-sync-messages current-net a b))
+                [a]
+                [b])
+               network)]
+          [network' [prop-id] b])))
+    {output-selector-key
+     (fn [arg-ids fallback-id]
+       (let [[_ b] (vec arg-ids)]
+         (or b fallback-id)))
+     application-activate-key
+     (fn [current-net _context-id arg-ids _out-id]
+       (let [[a b] (vec arg-ids)]
+         (when-not (and a b (= 2 (count arg-ids)))
+           (throw (ex-info "-> expects exactly two arguments"
+                           {:arg-ids arg-ids})))
+         (forward-sync-messages current-net a b)))}))
+
+(defn- switch-ids
+  [arg-ids fallback-id]
+  (let [[value-id condition-id explicit-out-id] (vec arg-ids)
+        out-id (or explicit-out-id fallback-id)]
+    (when-not (and value-id condition-id out-id
+                   (<= 2 (count arg-ids) 3))
+      (throw (ex-info "switch expects value, condition, and optional output"
+                      {:arg-ids arg-ids})))
+    [value-id condition-id out-id]))
+
+(defn- switch-messages
+  [network value-id condition-id out-id]
+  (let [condition (unwrap-compiler-value
+                   (net/network-cell-strongest network condition-id))]
+    (cond
+      (value/contradiction? condition) [(message out-id value/contradiction)]
+      (value/unusable? condition) []
+      condition (forward-sync-messages network value-id out-id)
+      :else [])))
+
+(defn switch-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[value-id condition-id out-id] (switch-ids arg-ids fallback-id)
+            [prop-id network']
+            ((prop/construct-propagator
+              (fn [_inputs _outputs current-net]
+                (switch-messages current-net value-id condition-id out-id))
+              [value-id condition-id]
+              [out-id])
+             network)]
+        [network' [prop-id] out-id]))
+    {output-selector-key
+     (fn [arg-ids fallback-id]
+       (let [[_value-id _condition-id explicit-out-id] (vec arg-ids)]
+         (or explicit-out-id fallback-id)))
+     application-activate-key
+     (fn [current-net _context-id arg-ids fallback-id]
+       (let [[value-id condition-id out-id] (switch-ids arg-ids fallback-id)]
+         (switch-messages current-net value-id condition-id out-id)))}))
+
 (defn bi-sync-operator []
   (with-meta
     (fn [network arg-ids _out-id]
@@ -434,11 +507,7 @@
        (env/bind-at '- (operator-builder core/-) 0)
        (env/bind-at '* (operator-builder core/*) 0)
        (env/bind-at '/ (operator-builder core//) 0)
-       (env/bind-at 'switch
-                    (operator-builder
-                     (fn [x enabled?]
-                       (if enabled? x value/nothing)))
-                    0)
+       (env/bind-at 'switch (switch-operator) 0)
        (env/bind-at 'p:cons (cons-operator) 0)
        (env/bind-at 'p:slot (slot-operator) 0)
        (env/bind-at 'p:car (accessor-operator :car obj/p:car "p:car") 0)
@@ -447,6 +516,7 @@
        (env/bind-at 'car (accessor-operator :car obj/p:car "car") 0)
        (env/bind-at 'cdr (accessor-operator :cdr obj/p:cdr "cdr") 0)
        (env/bind-at 'execute-sub-env (execute-sub-env-operator) 0)
+       (env/bind-at '-> (sync-operator) 0)
        (env/bind-at '<-> (bi-sync-operator) 0))))
 
 (defn default-env []
@@ -464,6 +534,8 @@
       (env/bind-at '/ (behavior-operator :/ core//) 0)
       (env/bind-at 'p:slot (slot-operator) 0)
       (env/bind-at 'execute-sub-env (execute-sub-env-operator) 0)
+      (env/bind-at 'switch (switch-operator) 0)
+      (env/bind-at '-> (sync-operator) 0)
       (env/bind-at '<-> (bi-sync-operator) 0)))
 
 (defn behavior-tms-env []
