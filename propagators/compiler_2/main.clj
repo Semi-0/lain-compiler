@@ -1,9 +1,9 @@
 (ns propagators.compiler-2.main
   "Compatibility facade for compiler-2."
   (:require [propagators.compiler-2.application-value :as application-value]
+            [propagators.compiler-2.behavior :as behavior]
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.core :as core]
-            [propagators.compiler-2.tms-behavior :as tms-behavior]
             [propagators.compiler-2.parser :as parser]))
 
 (def compiler-result-key core/compiler-result-key)
@@ -42,7 +42,7 @@
   ([source env opts] (core/compile-source source env opts)))
 
 (defn behavior-tms-env []
-  (tms-behavior/behavior-tms-env))
+  (behavior/behavior-tms-env))
 
 (defn compile-expr-with-behavior-tms
   ([expr] (compile-expr-with-behavior-tms expr {}))

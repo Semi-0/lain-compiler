@@ -96,15 +96,28 @@
     (install-output-adapter n result-id (first output-inners))
     [n []]))
 
+(defn- cell-content-or-nothing
+  [network id]
+  (if (contains? (net/net-env network) id)
+    (net/network-cell-content network id)
+    value/nothing))
+
 (defn- externalized-output-messages
   [network-from network-to external-outputs]
   (keep identity
         (map (fn [ext]
                (when-let [int-id (net/lookup-inner-out network-from ext)]
-                 (let [inner-value (h/strongest-or-nothing network-from int-id)
-                       outer-value (h/strongest-or-nothing network-to ext)
-                       output-value (externalize-output-value inner-value
-                                                              network-from)]
+                 (let [inner-content (cell-content-or-nothing network-from int-id)
+                       inner-strongest (h/strongest-or-nothing network-from int-id)
+                       output-value (externalize-output-value
+                                     (if (value/unusable? inner-content)
+                                       inner-strongest
+                                       inner-content)
+                                     network-from)
+                       outer-content (cell-content-or-nothing network-to ext)
+                       outer-value (if (value/unusable? outer-content)
+                                     (h/strongest-or-nothing network-to ext)
+                                     outer-content)]
                    (when (and (not (value/unusable? output-value))
                               (cell-merge/cell-updated? output-value
                                                         outer-value
@@ -300,12 +313,6 @@
     :path []
     :props []
     :applications []}))
-
-(defn- cell-content-or-nothing
-  [network id]
-  (if (contains? (net/net-env network) id)
-    (net/network-cell-content network id)
-    value/nothing))
 
 (defn execute-sub-env-messages
   [parent-env-id expr-id child-env-id out-id network]

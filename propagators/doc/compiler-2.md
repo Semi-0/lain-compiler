@@ -73,11 +73,66 @@ declares relationships among those cells. Returning `next` is a separate source
 expression; the network call does not synthesize a hidden result object with
 `same` / `next` slots.
 
-Distributed TMS is the default compiler-2 path. The compiler-facing operators
-live in `propagators.compiler-2.tms-behavior`, and `default-env` binds
-distributed premise/content inputs, premise believe/retract, `tms-closure`, and
-distributed `premise-closure`. `distributed-premise-closure` remains as the
-explicit long name for the same operator.
+Distributed TMS is the default compiler-2 path. The compiler-facing TMS
+operators live in `propagators.compiler-2.tms`, behavior operators live in
+`propagators.compiler-2.behavior`, and the old
+`propagators.compiler-2.tms-behavior` namespace is now only a compatibility
+facade. `default-env` binds distributed premise/content inputs, premise
+believe/retract, `tms-closure`, and distributed `premise-closure`.
+`distributed-premise-closure` remains as the explicit long name for the same
+operator.
+
+The behavior+TMS env also binds `behavior-point`, which constructs a behavior
+value from ordinary compiler-2 source. Because it is just an operator, it can be
+wrapped in a normal compiler-2 network closure:
+
+```clojure
+(let-cell [a b out]
+  (def-net make-point [t v] [out]
+    (behavior-point t v out))
+  (make-point 6 2 a)
+  (make-point 6 7 b)
+  (<-> (+ a b) out)
+  out)
+```
+
+For reducer-shaped behavior, the same env binds `behavior`, `behavior-event`,
+`behavior-empty-state`, `behavior-add-event`, and `behavior-retain-last`.
+`behavior` takes an event source and a compiler-2 network closure; each reducer
+step runs that closure as the one-time merge network:
+
+```clojure
+(let-cell [events out]
+  (def-net retain-event [acc update] [out]
+    (behavior-add-event acc update out))
+  (behavior-event 6 2 events)
+  (behavior-event 8 3 events)
+  (behavior events retain-event (behavior-empty-state) out)
+  out)
+```
+
+The merge network can also be written from lower-level behavior operators when
+the policy should be explicit in compiler-2 source:
+
+```clojure
+(def-net retain-event-low [acc update] [out]
+  (let-cell [known tick value next]
+    (behavior-state-events acc known)
+    (behavior-update-tick update tick)
+    (behavior-update-value update value)
+    (behavior-assoc-event known tick value next)
+    (behavior-state-from-events next out)))
+```
+
+Changing the reducer closure changes retention policy while keeping the same
+behavior construction path:
+
+```clojure
+(def-net retain-window [acc update] [out]
+  (let-cell [full]
+    (behavior-add-event acc update full)
+    (behavior-retain-last full 2 out)))
+```
 
 `premise-closure` is sugar for a premise-marked network operator. It takes a
 wrapped `network`, a premise cell, and an epoch cell. Application runs the

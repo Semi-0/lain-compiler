@@ -1,0 +1,630 @@
+(ns propagators.compiler-2.behavior
+  "Compiler-2 behavior operators."
+  (:refer-clojure :exclude [* + - /])
+  (:require [clojure.core :as core]
+            [propagators.cells.value :as value]
+            [propagators.compiler-2.closure-value :as closure-value]
+            [propagators.compiler-2.env :as env]
+            [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.tms :as compiler-tms]
+            [propagators.datastructures.behavior :as behavior]
+            [propagators.datastructures.behavior-algebra :as hist]
+            [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.dependency :as dependency]
+            [propagators.datastructures.reducer-subnet :as reducer]
+            [propagators.datastructures.scope-source :as scope-source]
+            [propagators.datastructures.tms :as tms]
+            [propagators.message :refer [message]]
+            [propagators.network :as net]
+            [propagators.network-builder :as nb]
+            [propagators.propagator :as prop]
+            [propagators.stdlib.arithmetic.behavior :as behavior-arithmetic]))
+
+(defn- unwrap-compiler-value
+  [v]
+  (-> v
+      scope-source/unwrap
+      tms/distributed-base-value
+      dependency/unwrap))
+
+(defn distributed-behavior-operator
+  "TMS-composed behavior wrapper; plain behavior arithmetic remains in helpers."
+  [op f]
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[prop-id network']
+            ((apply (behavior-arithmetic/distributed-behavior-propagator op f)
+                    (conj (vec arg-ids) out-id))
+             network)]
+        [network' [prop-id] out-id]))
+    {h/application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (behavior-arithmetic/distributed-behavior-messages
+        op
+        f
+        arg-ids
+        out-id
+        current-net))}))
+
+(defn stable-distributed-behavior-operator
+  "Behavior-TMS wrapper with stable claim reuse for rebuilt behavior values."
+  [op f]
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[prop-id network']
+            ((apply (behavior-arithmetic/distributed-behavior-stable-propagator op f)
+                    (conj (vec arg-ids) out-id))
+             network)]
+        [network' [prop-id] out-id]))
+    {h/application-activate-key
+     (fn [current-net _context-id arg-ids out-id]
+       (behavior-arithmetic/distributed-behavior-stable-messages
+        op
+        f
+        arg-ids
+        out-id
+        current-net))}))
+
+(defn- behavior-point-messages
+  [network at-id value-id out-id]
+  (let [at (unwrap-compiler-value (net/network-cell-strongest network at-id))
+        v (unwrap-compiler-value (net/network-cell-strongest network value-id))]
+    (cond
+      (or (value/contradiction? at)
+          (value/contradiction? v))
+      [(message out-id value/contradiction)]
+
+      (or (value/nothing? at)
+          (value/nothing? v))
+      []
+
+      :else
+      [(message out-id
+                (behavior/behavior-value
+                 {:history (hist/records->history [(hist/point-record at v)])
+                  :source-keys #{[:compiler-2/behavior-point out-id at]}
+                  :reducer behavior/event-history-reducer-id}))])))
+
+(defn behavior-point-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[at-id value-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id fallback-id)]
+        (when-not (and at-id value-id out-id (<= 2 (count arg-ids) 3))
+          (throw (ex-info "behavior-point expects time, value, and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (behavior-point-messages current-net at-id value-id out-id))
+                [at-id value-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 2 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[at-id value-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and at-id value-id out-id (<= 2 (count arg-ids) 3))
+           (throw (ex-info "behavior-point expects time, value, and optional output"
+                           {:arg-ids arg-ids})))
+         (behavior-point-messages network at-id value-id out-id)))}))
+
+(defn- event-source-messages
+  [network at-id value-id out-id]
+  (let [at (unwrap-compiler-value (net/network-cell-strongest network at-id))
+        v (unwrap-compiler-value (net/network-cell-strongest network value-id))]
+    (cond
+      (or (value/contradiction? at)
+          (value/contradiction? v))
+      [(message out-id value/contradiction)]
+
+      (or (value/nothing? at)
+          (value/nothing? v))
+      []
+
+      (not (integer? at))
+      [(message out-id value/contradiction)]
+
+      :else
+      [(message out-id (obj/compound-object {at v}))])))
+
+(defn behavior-event-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[at-id value-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id fallback-id)]
+        (when-not (and at-id value-id out-id (<= 2 (count arg-ids) 3))
+          (throw (ex-info "behavior-event expects time, value, and optional source"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (event-source-messages current-net at-id value-id out-id))
+                [at-id value-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 2 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[at-id value-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and at-id value-id out-id (<= 2 (count arg-ids) 3))
+           (throw (ex-info "behavior-event expects time, value, and optional source"
+                           {:arg-ids arg-ids})))
+         (event-source-messages network at-id value-id out-id)))}))
+
+(defn- event-update-tick
+  [slot]
+  (cond
+    (integer? slot) slot
+    (and (vector? slot)
+         (= :behavior/event (first slot))
+         (integer? (second slot))) (second slot)))
+
+(defn- state-from-events
+  [events retained-events]
+  (behavior/history-state
+   events
+   (into {}
+         (map (fn [[tick v]] [tick (behavior/point-event tick v)]))
+         retained-events)))
+
+(defn- event-history-state
+  [events]
+  (state-from-events events (sort-by key events)))
+
+(defn- add-event-state
+  [acc update]
+  (let [tick (some-> update :slot event-update-tick)
+        v (:value update)
+        events (behavior/state-events acc)]
+    (cond
+      (or (nil? tick)
+          (not (map? events)))
+      value/contradiction
+
+      (and (contains? events tick)
+           (not= (get events tick) v))
+      value/contradiction
+
+      :else
+      (event-history-state (assoc events tick v)))))
+
+(defn- add-event-state-messages
+  [network acc-id update-id out-id]
+  (let [acc (unwrap-compiler-value (net/network-cell-strongest network acc-id))
+        update (unwrap-compiler-value (net/network-cell-strongest network update-id))]
+    (cond
+      (or (value/contradiction? acc)
+          (value/contradiction? update))
+      [(message out-id value/contradiction)]
+
+      (or (value/nothing? acc)
+          (value/nothing? update))
+      []
+
+      :else
+      [(message out-id (add-event-state acc update))])))
+
+(defn behavior-add-event-operator []
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[acc-id update-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id out-id)]
+        (when-not (and acc-id update-id out-id (<= 2 (count arg-ids) 3))
+          (throw (ex-info "behavior-add-event expects acc, update, and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (add-event-state-messages current-net acc-id update-id out-id))
+                [acc-id update-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 2 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[acc-id update-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and acc-id update-id out-id (<= 2 (count arg-ids) 3))
+           (throw (ex-info "behavior-add-event expects acc, update, and optional output"
+                           {:arg-ids arg-ids})))
+         (add-event-state-messages network acc-id update-id out-id)))}))
+
+(defn- state-events-messages
+  [network state-id out-id]
+  (let [state (unwrap-compiler-value (net/network-cell-strongest network state-id))]
+    (cond
+      (value/nothing? state) []
+      (value/contradiction? state) [(message out-id value/contradiction)]
+      :else [(message out-id (behavior/state-events state))])))
+
+(defn behavior-state-events-operator []
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[state-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id out-id)]
+        (when-not (and state-id out-id (<= 1 (count arg-ids) 2))
+          (throw (ex-info "behavior-state-events expects state and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (state-events-messages current-net state-id out-id))
+                [state-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 1 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[state-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and state-id out-id (<= 1 (count arg-ids) 2))
+           (throw (ex-info "behavior-state-events expects state and optional output"
+                           {:arg-ids arg-ids})))
+         (state-events-messages network state-id out-id)))}))
+
+(defn- update-field-messages
+  [field network update-id out-id]
+  (let [update (unwrap-compiler-value (net/network-cell-strongest network update-id))]
+    (cond
+      (value/nothing? update) []
+      (value/contradiction? update) [(message out-id value/contradiction)]
+      :else
+      (case field
+        :tick [(message out-id (event-update-tick (:slot update)))]
+        :value [(message out-id (:value update))]))))
+
+(defn behavior-update-field-operator [field name]
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[update-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id out-id)]
+        (when-not (and update-id out-id (<= 1 (count arg-ids) 2))
+          (throw (ex-info (str name " expects update and optional output")
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (update-field-messages field current-net update-id out-id))
+                [update-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 1 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[update-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and update-id out-id (<= 1 (count arg-ids) 2))
+           (throw (ex-info (str name " expects update and optional output")
+                           {:arg-ids arg-ids})))
+         (update-field-messages field network update-id out-id)))}))
+
+(defn- assoc-event-messages
+  [network events-id tick-id value-id out-id]
+  (let [events (unwrap-compiler-value (net/network-cell-strongest network events-id))
+        tick (unwrap-compiler-value (net/network-cell-strongest network tick-id))
+        v (unwrap-compiler-value (net/network-cell-strongest network value-id))]
+    (cond
+      (or (value/nothing? events)
+          (value/nothing? tick)
+          (value/nothing? v)) []
+
+      (or (value/contradiction? events)
+          (value/contradiction? tick)
+          (value/contradiction? v)
+          (not (integer? tick))
+          (not (map? events))) [(message out-id value/contradiction)]
+
+      (and (contains? events tick)
+           (not= (get events tick) v)) [(message out-id value/contradiction)]
+
+      :else [(message out-id (assoc events tick v))])))
+
+(defn behavior-assoc-event-operator []
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[events-id tick-id value-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id out-id)]
+        (when-not (and events-id tick-id value-id out-id
+                       (<= 3 (count arg-ids) 4))
+          (throw (ex-info "behavior-assoc-event expects events, tick, value, and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (assoc-event-messages current-net
+                                        events-id
+                                        tick-id
+                                        value-id
+                                        out-id))
+                [events-id tick-id value-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 3 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[events-id tick-id value-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and events-id tick-id value-id out-id
+                        (<= 3 (count arg-ids) 4))
+           (throw (ex-info "behavior-assoc-event expects events, tick, value, and optional output"
+                           {:arg-ids arg-ids})))
+         (assoc-event-messages network events-id tick-id value-id out-id)))}))
+
+(defn- state-from-events-messages
+  [network events-id out-id]
+  (let [events (unwrap-compiler-value (net/network-cell-strongest network events-id))]
+    (cond
+      (value/nothing? events) []
+      (or (value/contradiction? events)
+          (not (map? events))) [(message out-id value/contradiction)]
+      :else [(message out-id (event-history-state events))])))
+
+(defn behavior-state-from-events-operator []
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[events-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id out-id)]
+        (when-not (and events-id out-id (<= 1 (count arg-ids) 2))
+          (throw (ex-info "behavior-state-from-events expects events and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (state-from-events-messages current-net events-id out-id))
+                [events-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 1 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[events-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and events-id out-id (<= 1 (count arg-ids) 2))
+           (throw (ex-info "behavior-state-from-events expects events and optional output"
+                           {:arg-ids arg-ids})))
+         (state-from-events-messages network events-id out-id)))}))
+
+(defn- retain-last-messages
+  [network state-id n-id out-id]
+  (let [state (unwrap-compiler-value (net/network-cell-strongest network state-id))
+        n (unwrap-compiler-value (net/network-cell-strongest network n-id))]
+    (cond
+      (or (value/nothing? state)
+          (value/nothing? n)) []
+      (or (value/contradiction? state)
+          (value/contradiction? n)
+          (not (pos-int? n))) [(message out-id value/contradiction)]
+      :else
+      [(message out-id
+                (state-from-events
+                 (behavior/state-events state)
+                 (take-last n (sort-by key (behavior/state-events state)))))])))
+
+(defn behavior-retain-last-operator []
+  (with-meta
+    (fn [network arg-ids out-id]
+      (let [[state-id n-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id out-id)]
+        (when-not (and state-id n-id out-id (<= 2 (count arg-ids) 3))
+          (throw (ex-info "behavior-retain-last expects state, n, and optional output"
+                          {:arg-ids arg-ids})))
+        (let [[prop-id network']
+              ((prop/construct-propagator
+                (fn [_inputs _outputs current-net]
+                  (retain-last-messages current-net state-id n-id out-id))
+                [state-id n-id]
+                [out-id])
+               network)]
+          [network' [prop-id] out-id])))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 2 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[state-id n-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and state-id n-id out-id (<= 2 (count arg-ids) 3))
+           (throw (ex-info "behavior-retain-last expects state, n, and optional output"
+                           {:arg-ids arg-ids})))
+         (retain-last-messages network state-id n-id out-id)))}))
+
+(defn behavior-empty-state-operator []
+  (with-meta
+    (fn [network arg-ids out-id]
+      (when-not (empty? arg-ids)
+        (throw (ex-info "behavior-empty-state expects no arguments"
+                        {:arg-ids arg-ids})))
+      (let [[prop-id network']
+            ((prop/construct-propagator
+              (fn [_inputs _outputs _current-net]
+                [(message out-id (behavior/empty-history-state))])
+              []
+              [out-id])
+             network)]
+        [network' [prop-id] out-id]))
+    {h/application-activate-key
+     (fn [_network _context-id arg-ids out-id]
+       (when-not (empty? arg-ids)
+         (throw (ex-info "behavior-empty-state expects no arguments"
+                         {:arg-ids arg-ids})))
+       [(message out-id (behavior/empty-history-state))])}))
+
+(defn- closure-output-symbols
+  [output]
+  (cond
+    (nil? output) []
+    (symbol? output) [output]
+    (vector? output) output
+    :else []))
+
+(defn- closure-merge-arg-ids
+  [closure-info acc-id update-id out-id]
+  (let [inputs (closure-value/closure-inputs closure-info)
+        outputs (closure-output-symbols (closure-value/closure-output closure-info))]
+    (cond
+      (and (= 2 (count inputs)) (= 1 (count outputs)))
+      [acc-id update-id out-id]
+
+      (and (= 2 (count inputs)) (empty? outputs))
+      [acc-id update-id])))
+
+(defn- closure-merge-net
+  [closure-id closure-info]
+  (let [acc-id (h/stable-node-id :compiler-2/behavior-merge closure-id :acc)
+        update-id (h/stable-node-id :compiler-2/behavior-merge closure-id :update)
+        out-id (h/stable-node-id :compiler-2/behavior-merge closure-id :out)
+        closure-cell-id (h/stable-node-id :compiler-2/behavior-merge closure-id :closure)
+        args-id (h/stable-node-id :compiler-2/behavior-merge closure-id :args)
+        arg-ids (closure-merge-arg-ids closure-info acc-id update-id out-id)]
+    (when arg-ids
+      (let [n0 (-> net/empty-net
+                   (nb/install-cell acc-id)
+                   (nb/install-cell update-id)
+                   (nb/install-cell out-id)
+                   (nb/install-cell args-id)
+                   (nb/install-cell closure-cell-id closure-info closure-info))
+            [_prop-id n1] (((requiring-resolve
+                             'propagators.compiler-2.application/p:apply-closure)
+                            closure-cell-id
+                            args-id
+                            arg-ids
+                            out-id)
+                           n0)]
+        (-> n1
+            (net/assoc-net-dict-entry :acc acc-id)
+            (net/assoc-net-dict-entry :update update-id)
+            (net/assoc-net-dict-entry :out out-id)
+            (net/assoc-net-dict-entry behavior/reducer-id-key
+                                      [:behavior.reducer/compiler-2-closure
+                                       closure-id]))))))
+
+(defn- behavior-source-event-keys
+  [source]
+  (let [source* (obj/as-accessor-network source)
+        slot-keys (if (obj/accessor-network? source*)
+                    (obj/accessor-slot-keys source*)
+                    (obj/public-slot-keys (obj/compound-object source)))]
+    (set (keep event-update-tick slot-keys))))
+
+(defn- valid-history-state?
+  [state]
+  (and (not (value/contradiction? state))
+       (map? (behavior/state-events state))
+       (not (value/contradiction? (behavior/state-history state)))))
+
+(defn- behavior-closure-messages
+  [network source-id closure-id init-id out-id]
+  (let [source (h/strongest-or-nothing network source-id)
+        closure-info (h/strongest-or-nothing network closure-id)
+        init (h/strongest-or-nothing network init-id)]
+    (cond
+      (or (value/nothing? source)
+          (value/nothing? closure-info)
+          (value/nothing? init))
+      []
+
+      (or (value/contradiction? source)
+          (value/contradiction? closure-info)
+          (value/contradiction? init)
+          (not (closure-value/closure-info? closure-info)))
+      [(message out-id value/contradiction)]
+
+      :else
+      (if-let [merge-net (closure-merge-net closure-id closure-info)]
+        (let [state (reducer/strongest
+                     (reducer/reducer-subnet source merge-net init))
+              source-keys* (behavior-source-event-keys source)
+              folded-keys (set (keys (behavior/state-events state)))
+              reducer-id (net/network-dict-entry merge-net behavior/reducer-id-key)]
+          (cond
+            (nil? reducer-id) [(message out-id value/contradiction)]
+            (not (valid-history-state? state)) [(message out-id value/contradiction)]
+            :else
+            [(message out-id
+                      (behavior/behavior-value
+                       {:history (behavior/state-history state)
+                        :source-keys (if (seq source-keys*)
+                                       folded-keys
+                                       #{})
+                        :reducer reducer-id}))]))
+        [(message out-id value/contradiction)]))))
+
+(defn behavior-operator []
+  (with-meta
+    (fn [network arg-ids fallback-id]
+      (let [[source-id closure-id init-id explicit-out-id] (vec arg-ids)
+            out-id (or explicit-out-id fallback-id)]
+        (when-not (and source-id closure-id init-id out-id
+                       (<= 3 (count arg-ids) 4))
+          (throw (ex-info "behavior expects source, reducer closure, init, and optional output"
+                          {:arg-ids arg-ids})))
+        [network [] out-id]))
+    {h/output-selector-key
+     (fn [arg-ids fallback-id]
+       (or (nth (vec arg-ids) 3 nil) fallback-id))
+     h/application-activate-key
+     (fn [network _context-id arg-ids fallback-id]
+       (let [[source-id closure-id init-id explicit-out-id] (vec arg-ids)
+             out-id (or explicit-out-id fallback-id)]
+         (when-not (and source-id closure-id init-id out-id
+                        (<= 3 (count arg-ids) 4))
+           (throw (ex-info "behavior expects source, reducer closure, init, and optional output"
+                           {:arg-ids arg-ids})))
+         (behavior-closure-messages network source-id closure-id init-id out-id)))}))
+
+(defn bind-behavior-operators
+  [compiler-env]
+  (-> compiler-env
+      (env/bind-at '+ (stable-distributed-behavior-operator :+ core/+) 0)
+      (env/bind-at '- (stable-distributed-behavior-operator :- core/-) 0)
+      (env/bind-at '* (stable-distributed-behavior-operator :* core/*) 0)
+      (env/bind-at '/ (stable-distributed-behavior-operator :/ core//) 0)
+      (env/bind-at 'behavior-point (behavior-point-operator) 0)
+      (env/bind-at 'behavior-event (behavior-event-operator) 0)
+      (env/bind-at 'behavior-empty-state (behavior-empty-state-operator) 0)
+      (env/bind-at 'behavior-add-event (behavior-add-event-operator) 0)
+      (env/bind-at 'behavior-state-events (behavior-state-events-operator) 0)
+      (env/bind-at 'behavior-update-tick
+                   (behavior-update-field-operator :tick "behavior-update-tick")
+                   0)
+      (env/bind-at 'behavior-update-value
+                   (behavior-update-field-operator :value "behavior-update-value")
+                   0)
+      (env/bind-at 'behavior-assoc-event (behavior-assoc-event-operator) 0)
+      (env/bind-at 'behavior-state-from-events
+                   (behavior-state-from-events-operator)
+                   0)
+      (env/bind-at 'behavior-retain-last (behavior-retain-last-operator) 0)
+      (env/bind-at 'behavior (behavior-operator) 0)))
+
+(defn behavior-tms-env []
+  (-> (obj/empty-compound-object)
+      (env/set-depth 0)
+      bind-behavior-operators
+      (env/bind-at 'execute-sub-env (h/execute-sub-env-operator) 0)
+      compiler-tms/bind-distributed-tms-operators
+      (env/bind-at '<-> (h/bi-sync-operator) 0)))

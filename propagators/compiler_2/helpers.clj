@@ -330,6 +330,10 @@
       (tms/distributed-value? content)
       (tms/distributed-forward-update content)
 
+      ((requiring-resolve 'propagators.datastructures.behavior/behavior-value?)
+       content)
+      content
+
       (not (value/unusable? strongest))
       strongest
 
@@ -372,7 +376,7 @@
 (defn- bind-default-tms-operators
   [compiler-env]
   ((requiring-resolve
-    'propagators.compiler-2.tms-behavior/bind-distributed-tms-operators)
+    'propagators.compiler-2.tms/bind-distributed-tms-operators)
    compiler-env))
 
 (defn- operator-env
@@ -416,8 +420,8 @@
 
 (defn behavior-tms-env []
   ((requiring-resolve
-    'propagators.compiler-2.tms-behavior/behavior-tms-env)))
+    'propagators.compiler-2.behavior/behavior-tms-env)))
 
 (defn legacy-central-tms-env []
   ((requiring-resolve
-    'propagators.compiler-2.tms-behavior/legacy-central-tms-env)))
+    'propagators.compiler-2.legacy/legacy-central-tms-env)))
