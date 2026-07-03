@@ -472,6 +472,18 @@ clojure -M -m graph.compiler-2-runtime-server request 45555 \
 clojure -M -m graph.compiler-2-tui 45555 tui-1
 ```
 
+Shortcut aliases:
+
+```bash
+clojure -M:wired/server
+clojure -M:wired/client -name A
+clojure -M:wired/xr
+```
+
+`:wired/server` starts the shared compiler-2 runtime on the default port.
+`:wired/client` starts a TUI client against that runtime; `-name A` selects the
+client instance name. `:wired/xr` starts the browser/XR projection server.
+
 ## Parallel GUR Linked-List Probe
 
 `test/propagators/compiler_2_gur_linked_list_test.clj` is a prototype slice, not
