@@ -84,7 +84,9 @@ Current implementation:
 
 Current implementation:
 
-- zero-output closures created with `cell` or `::` return the body result cell;
+- zero-output closures created with `cell` or `::` allocate/return an
+  application output cell when called;
+- the closure body result is projected into that returned output cell;
 - declared-output closures consume explicit output cells as tail applicants;
 - declared-output network calls do not create hidden result objects;
 - callers return/read the desired output cell explicitly.
@@ -226,7 +228,8 @@ Current implementation:
 Current implementation:
 
 - `cell` and `::` are zero-output closure forms;
-- applying them returns the body result cell.
+- applying them returns an output cell;
+- the body result is synced/projected into that output cell.
 
 ### `def-constraint`
 
@@ -622,6 +625,10 @@ Current implementation:
 ### TUI Block Output
 
 ```clojure
+(-> value (block 2))
+(<-> value (block 2))
+(-> value (block-at (instance taro) 2))
+
 (block-at (instance taro) 2 out)
 (be:block-at (instance taro) 2 out)
 ```
@@ -632,9 +639,17 @@ Current implementation:
   them with a generated output cell and `(block-at % <next-index> out)`, so the
   result displays in the next block;
 - top-level declarations and IO forms are not auto-wrapped: `def`, `def-cell`,
-  `def-cells`, `def-net`, `def-constraint`, `->`, `<->`, `block-at`,
-  `be:block-at`, `trace`, `xr-io`, `slider-io`, and `slider-panel-io`;
+  `def-cells`, `def-net`, `def-constraint`, `->`, `<->`, `block`, `block-at`,
+  `be:block-at`, `trace`, `io:xr`, `io:slider`, `io:slider-panel`, and the
+  older compatibility forms `xr-io`, `slider-io`, and `slider-panel-io`;
+- `(block index)` returns the current TUI instance's block text cell;
+- `(block-at instance index)` returns the addressed instance's block text cell;
+- `(block index)` may bind future blocks; the runtime creates missing blank
+  blocks so the target can update immediately;
+- `(block index)` rejects non-empty past targets. Empty past blocks are allowed;
 - `block-at` writes through the normal monotone block text path;
+- the older `(block-at instance index value)` form remains available for
+  compatibility and explicit cross-instance block binding;
 - `be:block-at` writes through a latest-behavior display lane and is intended
   for repeated behavior/XR updates.
 
@@ -643,18 +658,32 @@ Example:
 ```clojure
 (def-cell out)
 (-> (+ 1 2) out)
-(block-at (instance taro) 2 out)
+(-> out (block 2))
+```
+
+```clojure
+(-> (+ 1 2) (block-at (instance taro) 2))
 ```
 
 ```clojure
 (be:block-at (instance taro) 2 out)
 ```
 
+Future design:
+
+```clojure
+(io:block blocks file)
+```
+
+`io:block` should bidirectionally bind a block collection to a file and support
+bidirectional reload. Longer term, all `io:*` forms should return an instance
+cell for the external resource they register.
+
 ### XR Trace And Projection
 
 ```clojure
 (trace out graph)
-(xr-io graph receipt)
+(io:xr graph receipt)
 ```
 
 Future pro tracer surface:
@@ -676,8 +705,9 @@ or, as explicit trace modes:
 Current implementation:
 
 - `trace` builds a semantic graph trace from a cell;
-- `xr-io` emits a boundary effect that starts or refreshes the XR/browser
+- `io:xr` emits a boundary effect that starts or refreshes the XR/browser
   projection;
+- `xr-io` remains as the older compatibility spelling;
 - the browser receives graph/widget projections and does not directly mutate
   arbitrary cells.
 
@@ -697,23 +727,42 @@ Example:
 ```clojure
 (let-cell [g receipt]
   (trace out g)
-  (xr-io g receipt)
+  (io:xr g receipt)
   receipt)
 ```
 
 ### Slider Widget IO
 
 ```clojure
-(slider-io widget-id view-cell event-source-cell out)
+(io:slider value-cell)
+(io:slider widget-id value-cell)
 ```
 
 Current implementation:
 
 - registers one browser/XR slider with channel `"value"`;
-- `view-cell` is projected back to the widget as display/feedback;
-- browser events are keyed by widget id and channel;
-- runtime resolves the registered event source cell and injects monotone
-  behavior events.
+- `value-cell` is used as both the widget view cell and the widget event-source
+  cell;
+- the one-argument form uses the env symbol name as the widget id, so
+  `(io:slider gain)` registers widget `"gain"`;
+- applying `io:slider` returns the same `value-cell`, so it can be used as an
+  ordinary prefix expression;
+- browser events are keyed by widget id and channel; the runtime resolves the
+  registered event-source cell and injects monotone event records.
+
+Example:
+
+```clojure
+(def-cell gain)
+(io:slider gain)
+```
+
+The lower-level compatibility form is still available when widget feedback and
+event input need separate cells:
+
+```clojure
+(slider-io widget-id view-cell event-source-cell out)
+```
 
 Example:
 
@@ -732,18 +781,36 @@ Example:
 ### Slider Panel IO
 
 ```clojure
+(io:slider-panel [a b c])
+(io:slider-panel "mix" [a b c])
+```
+
+Current implementation:
+
+- registers one browser/XR widget panel with one slider channel per cell;
+- the explicit id form uses the first argument as the panel id;
+- the one-argument form uses the default panel id `"panel"`;
+- channel names default from env cell symbols, so `[a b c]` registers channels
+  `"a"`, `"b"`, and `"c"`;
+- each listed cell is both the view cell and event-source cell for its channel;
+- applying `io:slider-panel` returns the generated panel descriptor cell.
+
+Example:
+
+```clojure
+(def-cells a b c)
+(io:slider-panel "mix" [a b c])
+```
+
+The lower-level compatibility form remains available for split view/event
+channels:
+
+```clojure
 (slider-panel-io panel-id
   channel-a view-a events-a
   channel-b view-b events-b
   out)
 ```
-
-Current implementation:
-
-- registers one browser/XR widget panel with multiple slider channels;
-- each channel maps to its own view cell and event source cell;
-- browser/XR interaction uses the same runtime widget-event path for every
-  channel.
 
 Example:
 
@@ -791,10 +858,11 @@ Current implementation:
 ## Projection
 
 ```clojure
-(xr-io graph-io receipt)
+(io:xr graph-io receipt)
 ```
 
 Current implementation:
 
-- `xr-io` is implemented in the compiler-2 runtime env;
+- `io:xr` is implemented in the compiler-2 runtime env;
+- `xr-io` remains as the older compatibility spelling;
 - it is a boundary-effect output path, not a browser mutation primitive.
