@@ -499,6 +499,12 @@ clojure -M -m graph.compiler-2-runtime-server trace 45555 next
 clojure -M -m graph.compiler-2-runtime-server request 45555 \
 '{:op :semantic/trace/install :label "next" :direction :upstream :interval-ms 5000}'
 
+clojure -M -m graph.compiler-2-runtime-server udp-request 45555 \
+'{:op :agent/send-block :client-id "agent" :text "(+ 1 2)"}'
+
+clojure -M -m graph.compiler-2-runtime-server udp-request 45555 \
+'{:op :agent/blocks :client-id "agent"}'
+
 clojure -M -m graph.compiler-2-tui 45555 tui-1
 ```
 
@@ -517,6 +523,29 @@ session.
 `:wired/client` starts a TUI client against that runtime; `-name A` selects the
 client instance name. `:wired/xr` starts a standalone browser/XR projection
 server for isolated XR testing.
+
+The runtime server also starts an EDN-over-UDP endpoint on the same numeric
+port by default. It is intended for lightweight LLM-agent integration with a
+running block session. UDP commands use the same response envelope as TCP:
+
+```clojure
+{:ok true :result ...}
+{:ok false :error "..."}
+```
+
+Agent block commands:
+
+```clojure
+{:op :agent/send-block :client-id "agent" :text "(+ 1 2)"}
+{:op :agent/send-block :client-id "agent" :mode :append :text "(def x)"}
+{:op :agent/blocks :client-id "agent"}
+{:op :agent/blocks :client-id "agent" :indexes [0 2 3]}
+{:op :agent/block :client-id "agent" :index 1}
+```
+
+`:agent/send-block` defaults to submit-mode, matching the TUI prompt behavior:
+it writes into the current input block, compiles, and leaves the next blank
+prompt block ready. Append-mode directly appends a new source block.
 
 ## Parallel GUR Linked-List Probe
 

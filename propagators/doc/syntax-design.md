@@ -1,6 +1,6 @@
 # Compiler-2 Syntax Design
 
-Current checkpoint: 2026-07-04.
+Current checkpoint: 2026-07-05.
 
 Compiler-2 is a propagator-language prototype. The syntax should expose ordinary
 propagator topology, closure/network values, behavior/TMS composition, and
@@ -15,12 +15,29 @@ Implemented compiler-2 surface:
   `def-net`, `def-constraint`, `network`, `cell`, and `::`;
 - declared-output closure application;
 - pair access through `cons`, `car`, and `cdr`;
+- linked list construction through `list`, lowered to `p:cons` topology;
 - generic compound slot access through `p:slot`;
 - value-level conditionals: `switch`, `if`, `branch`, and `cond`;
-- arithmetic, `->`, and `<->`;
+- arithmetic, variadic `->`, and variadic `<->`;
 - behavior/TMS default entry through
   `propagators.compiler-2.main/compile-source-with-behavior-tms`;
 - runtime/TUI/XR operators through the compiler-2 runtime env.
+
+## Naming Prefixes
+
+Current convention:
+
+- `p:` names expose low-level propagator/slot topology directly, for example
+  `p:cons`, `p:car`, `p:cdr`, and `p:slot`.
+- `be:` names expose behavior-aware operators. `be` stands for behavior; these
+  forms project through behavior/latest-event semantics instead of ordinary
+  one-shot cell text semantics.
+- `io:` names expose boundary resources. The target direction is that every
+  `io:*` form returns an instance/receipt cell for the external resource it
+  registers.
+- Unprefixed names are ordinary language conveniences over the same machinery,
+  for example `cons`, `car`, `cdr`, `list`, `block`, `trace`, `behavior`, and
+  `latest`.
 
 Implemented behavior/TMS surface:
 
@@ -31,10 +48,14 @@ Implemented behavior/TMS surface:
   facts carried by ordinary cells;
 - `behavior-cell` builds a behavior from compiler-2 code using reducer protocol
   inputs `[acc next]` and one output;
+- `behavior` / `behavior-cell` and their prefixed aliases `be:behavior` /
+  `be:behavior-cell` are the current behavior constructors;
 - behavior merge closures reuse the compiler-2 reducer adapter;
 - `behavior`, `latest`, `last`, `history`, `history-take`, `history-drop`, and
-  `history-split-at` are compiler-2-backed. `latest` and `last` return behavior
-  values and remain composable with behavior arithmetic.
+  `history-split-at` are compiler-2-backed. `be:latest`, `be:last`, and
+  `be:history` are prefixed aliases. `latest` / `be:latest` and `last` /
+  `be:last` return behavior values and remain composable with behavior
+  arithmetic.
 
 Still design/prototype work:
 
@@ -53,7 +74,9 @@ Still design/prototype work:
 (p:<propagator> <cell> ...)
 (+ 1 2)
 (-> value out)
+(-> a b c d)
 (<-> a b)
+(<-> a b c d)
 ```
 
 Current implementation:
@@ -61,9 +84,18 @@ Current implementation:
 - ordinary list application is the default application syntax;
 - primitive/operator applications compile to retained compiler-2 application
   data plus application propagators;
-- `->` is one-way sync, and `<->` is bidirectional sync;
+- `->` is one-way sync. With more than two arguments it installs an adjacent
+  one-way chain: `(-> a b c)` means `a -> b` and `b -> c`;
+- `<->` is bidirectional sync. With more than two arguments it installs
+  adjacent bidirectional links: `(<-> a b c)` means `a <-> b` and `b <-> c`;
+- both forms return the last cell in the chain;
 - `@` and `@once` remain reserved until they have semantics distinct from
   ordinary application.
+
+Verified in tests:
+
+- `compile-2-supports-forward-sync-chain`;
+- `compile-2-supports-bi-sync-chain`.
 
 ### Network Closure Application
 
@@ -363,6 +395,29 @@ Current implementation:
   operators;
 - updates are topology/accessor based, not host-map materialization.
 
+### Linked List Construction
+
+```clojure
+(list a b c)
+```
+
+```clojure
+(let-cell [xs tail]
+  (def xs (list 1 2 3))
+  (p:cdr tail xs)
+  (+ (p:car xs) (p:car tail)))
+```
+
+Current implementation:
+
+- `list` is a compiler-2 operator that lowers to a chain of `p:cons`
+  topology;
+- the terminal tail is the internal marker `:compiler-2/list-empty`;
+- `list` exists so higher-level syntax can pass normal linked structures
+  instead of pretending reader vectors are cells;
+- `io:slider-panel` uses `(list a b c)` as its public simplified argument
+  shape.
+
 ### Generic Slot Access
 
 ```clojure
@@ -419,15 +474,18 @@ Current implementation:
 
 ```clojure
 (-> value out)
+(-> a b c d)
 (<-> a b)
+(<-> a b c d)
 ```
 
 Current implementation:
 
 - arithmetic is available in default compiler-2 env;
 - the behavior/TMS env replaces arithmetic with behavior/TMS-aware wrappers;
-- `->` performs one-way sync;
-- `<->` performs bidirectional sync.
+- `->` performs one-way sync and supports adjacent chains;
+- `<->` performs bidirectional sync and supports adjacent chains;
+- both return the last cell in the chain.
 
 ## Self Reflectivity
 
@@ -512,6 +570,90 @@ Current implementation:
 - central reducer-cell TMS remains legacy compatibility;
 - `assert` and `negate` are still design-level names, not the active surface.
 
+### Premise-Closed Network Definitions
+
+Current lower-level shape:
+
+```clojure
+(let-cell [out]
+  (def-net plus-one [x] [out]
+    (<-> (+ x 1) out))
+  (def p-one :definition/plus-one)
+  (def e0 0)
+  (def op
+    (premise-closure
+      (network [f x] [out]
+        (f x out))
+      p-one
+      e0))
+  (op plus-one 5 out)
+  out)
+```
+
+Design target for the front of `def-net`:
+
+```clojure
+(def-net ^{:premise :definition/plus-one
+           :epoch 0}
+  transform [x] [out]
+  (<-> (+ x 1) out))
+
+(def-net ^{:premise :definition/plus-ten
+           :epoch 0}
+  transform [x] [out]
+  (<-> (+ x 10) out))
+```
+
+Equivalent desugaring target:
+
+```clojure
+(def-net transform:plus-one [x] [out]
+  (<-> (+ x 1) out))
+
+(def transform
+  (premise-closure
+    (network [x] [out]
+      (transform:plus-one x out))
+    :definition/plus-one
+    0))
+```
+
+The primitive is still the declared-output `network` closure. The combinator is
+`premise-closure`: it runs the wrapped closure through a hidden output and emits
+only the premise-marked distributed update to the explicit output cell. The
+front-of-definition syntax should therefore be additive sugar over closure data;
+it should not introduce a second network definition runtime.
+
+Multiple definitions for one public network name become multiple premise-closed
+operator facts. Bringing a premise in or retracting it selects which definition
+is currently active:
+
+```clojure
+(premise-retract :definition/plus-one 1 out)
+(premise-believe :definition/plus-ten 2 out)
+```
+
+When exactly one definition premise is active, the output projects that
+definition. When two active definitions disagree, the distributed strongest view
+projects contradiction. When a definition premise is retracted, old facts remain
+in content but the current projection drops that definition. This keeps
+declaration separate from evaluation: definitions are closure values plus
+premise evidence; premise state chooses which evidence is readable now.
+
+Verified code paths:
+
+- `compile-2-network-closure-is-data-only` and
+  `compile-2-closure-declaration-alone-does-not-evaluate-body` verify closure
+  declarations are data/topology, not eager body evaluation;
+- `compile-2-supports-first-slice-network-and-def-net` and
+  `compile-2-network-and-def-net-support-multiple-explicit-outputs` verify the
+  declared-output network primitive;
+- `compiler-2-distributed-tms-wraps-network-declaration-closure` verifies
+  `tms-closure` around a `def-net` declaration;
+- `compiler-2-redefined-premise-closure-operator-switches-by-premise` and
+  `compiler-2-distributed-premise-closure-marks-network-output` verify the
+  premise-closure selection/retraction shape.
+
 ## Behavior And Reactivity
 
 ### Behavior Construction
@@ -529,12 +671,27 @@ Current implementation:
 (behavior events retain-latest (behavior-empty-state) retained)
 ```
 
+```clojure
+(be:behavior-cell events (behavior-empty-state) retain-latest retained)
+```
+
+```clojure
+(be:behavior events retain-latest (behavior-empty-state) retained)
+```
+
 Current implementation:
 
 - behavior cells can be constructed from compiler-2-defined reducer closures;
 - reducer closures use the normal `[acc next] -> out` protocol;
 - behavior merge closures reuse the compiler-2 reducer adapter and generic
-  reducer-subnet machinery.
+  reducer-subnet machinery;
+- `be:behavior` and `be:behavior-cell` are implemented aliases for behavior
+  construction. `be` stands for behavior.
+
+Verified in tests:
+
+- `compiler-2-behavior-prefixed-constructor-builds-behavior`;
+- `compiler-2-behavior-prefixed-projections-are-behaviors`.
 
 ### Behavior History
 
@@ -545,6 +702,12 @@ Current implementation:
 (history-take behavior count out)
 (history-drop behavior count out)
 (history-split-at behavior index out)
+```
+
+```clojure
+(be:latest behavior)
+(be:last behavior index out)
+(be:history behavior start end out)
 ```
 
 Design targets:
@@ -563,9 +726,65 @@ Current implementation:
 
 - `latest`, `last`, `history`, `history-take`, `history-drop`, and
   `history-split-at` are implemented;
-- `latest` and `last` return behavior values, so they compose with behavior
-  arithmetic;
+- `be:latest`, `be:last`, and `be:history` are implemented behavior-prefixed
+  aliases;
+- `latest`, `be:latest`, `last`, and `be:last` return behavior values, so they
+  compose with behavior arithmetic;
 - closure/predicate history operators remain design targets.
+
+Verified in tests:
+
+- `compiler-2-behavior-syntax-latest-and-last-are-behaviors`;
+- `compiler-2-behavior-prefixed-projections-are-behaviors`;
+- `compiler-2-behavior-syntax-history-slices-return-behaviors`.
+
+### TMS-Composed Behavior
+
+The small, tested composition is: behavior owns temporal retention, TMS owns
+which behavior definition is active. A TMS claim can carry a behavior value as
+its proposition value:
+
+```clojure
+(claim :left-behavior
+       :behavior
+       <left-behavior-value>
+       [(support :definition/left)])
+```
+
+The inverse strategy is also just ordinary composition: a behavior stream can
+emit premise-state facts, or a behavior-valued network can be wrapped in
+`premise-closure`. The syntax should keep those intentions separate:
+
+```clojure
+;; behavior declaration
+(def-net retain-latest [acc next] [out]
+  (let-cell [full]
+    (behavior-add-event acc next full)
+    (behavior-retain-last full 1 out)))
+
+;; TMS authority over which behavior definition is active
+(def-net ^{:premise :definition/left
+           :epoch 0}
+  chosen-behavior [events] [out]
+  (behavior-cell events (behavior-empty-state) retain-latest out))
+```
+
+Here the behavior reducer is the strategy for retaining time, while the premise
+annotation is the strategy for selecting authority. Retraction is not deletion:
+the behavior history and the TMS premise facts remain monotone content; the
+current strongest projection changes because latest premise state changes.
+
+Verified code paths:
+
+- `compiler-2-main-can-build-behavior-with-compiler-closure-reducer` and
+  `compiler-2-behavior-cell-can-use-slot-based-merge-closure` verify
+  compiler-2-defined behavior reducers;
+- `compiler-2-behavior-syntax-latest-and-last-are-behaviors` and
+  `compiler-2-behavior-syntax-history-slices-return-behaviors` verify behavior
+  projections remain behavior values;
+- `tms-selects-between-behavior-valued-claims` verifies TMS can select between
+  behavior-valued claims and project contradiction when multiple active
+  behavior definitions conflict.
 
 ## Extension Surface
 
@@ -628,6 +847,7 @@ Current implementation:
 (-> value (block 2))
 (<-> value (block 2))
 (-> value (block-at (instance taro) 2))
+(-> behavior-value (be:block 2))
 
 (block-at (instance taro) 2 out)
 (be:block-at (instance taro) 2 out)
@@ -650,8 +870,13 @@ Current implementation:
 - `block-at` writes through the normal monotone block text path;
 - the older `(block-at instance index value)` form remains available for
   compatibility and explicit cross-instance block binding;
+- `(be:block index)` is the current-instance behavior display target. It
+  returns a proxy cell; values written to that proxy are projected through the
+  behavior display lane;
 - `be:block-at` writes through a latest-behavior display lane and is intended
   for repeated behavior/XR updates.
+- `(-> behavior-value (be:block index))` is verified as the expression-style
+  behavior block target.
 
 Example:
 
@@ -669,6 +894,21 @@ Example:
 (be:block-at (instance taro) 2 out)
 ```
 
+```clojure
+(def events)
+(def out)
+
+(def-net retain-event [acc update] [out]
+  (behavior-add-event acc update out))
+
+(behavior events retain-event (behavior-empty-state) out)
+(-> out (be:block 2))
+```
+
+Verified in tests:
+
+- `be-block-target-expression-displays-latest-update`.
+
 Future design:
 
 ```clojure
@@ -683,10 +923,10 @@ cell for the external resource they register.
 
 ```clojure
 (trace out graph)
-(io:xr graph receipt)
+(io:xr graph)
 ```
 
-Future pro tracer surface:
+Trace surfaces:
 
 ```clojure
 (compiler-graph-trace target out)
@@ -702,33 +942,37 @@ or, as explicit trace modes:
 (trace target :semantic out)
 ```
 
-Current implementation:
+Status quo:
 
-- `trace` builds a semantic graph trace from a cell;
-- `io:xr` emits a boundary effect that starts or refreshes the XR/browser
+- `trace` is implemented today and builds a semantic graph trace from a cell;
+- `semantic-trace` is a planned explicit spelling for the same semantic-trace
+  mode;
+- `compiler-graph-trace` is still a design target. It should show
+  compiler-produced topology and retained compiler application/closure
+  declarations;
+- `call-graph-trace` is still a design target. It should show closure/operator
+  applications and call structure without expanding every primitive edge by
+  default;
+- `io:xr` takes one graph cell and returns a generated receipt cell;
+- it emits a boundary effect that starts or refreshes the XR/browser
   projection;
 - `xr-io` remains as the older compatibility spelling;
 - the browser receives graph/widget projections and does not directly mutate
   arbitrary cells.
 
-Future design notes:
+Design notes:
 
-- `compiler-graph-trace` should show compiler-produced topology and retained
-  compiler application/closure declarations.
-- `call-graph-trace` should show closure/operator applications and call
-  structure without expanding every primitive edge by default.
-- `semantic-trace` should show user-level semantic graph relationships and keep
-  compound propagators collapsed until the user requests deeper expansion.
-- Pro tracers should serialize to the same JSON graph artifact shape used by
+- semantic traces should show user-level semantic graph relationships and keep
+  compound propagators collapsed until the user requests deeper expansion;
+- pro tracers should serialize to the same JSON graph artifact shape used by
   `serialize`.
 
 Example:
 
 ```clojure
-(let-cell [g receipt]
+(let-cell [g]
   (trace out g)
-  (io:xr g receipt)
-  receipt)
+  (io:xr g))
 ```
 
 ### Slider Widget IO
@@ -781,8 +1025,8 @@ Example:
 ### Slider Panel IO
 
 ```clojure
-(io:slider-panel [a b c])
-(io:slider-panel "mix" [a b c])
+(io:slider-panel (list a b c))
+(io:slider-panel "mix" (list a b c))
 ```
 
 Current implementation:
@@ -790,17 +1034,24 @@ Current implementation:
 - registers one browser/XR widget panel with one slider channel per cell;
 - the explicit id form uses the first argument as the panel id;
 - the one-argument form uses the default panel id `"panel"`;
-- channel names default from env cell symbols, so `[a b c]` registers channels
-  `"a"`, `"b"`, and `"c"`;
+- channel names default from env cell symbols, so `(list a b c)` registers
+  channels `"a"`, `"b"`, and `"c"`;
 - each listed cell is both the view cell and event-source cell for its channel;
-- applying `io:slider-panel` returns the generated panel descriptor cell.
+- applying `io:slider-panel` returns the generated panel descriptor cell;
+- public syntax uses `(list ...)`, which lowers to linked-list `p:cons`
+  topology. Vector syntax is not the documented compiler-2 surface here.
 
 Example:
 
 ```clojure
 (def-cells a b c)
-(io:slider-panel "mix" [a b c])
+(io:slider-panel "mix" (list a b c))
 ```
+
+Verified in tests:
+
+- `io-slider-panel-registers-channel-names-from-cell-symbols`;
+- `io-slider-panel-defaults-panel-id-with-list-syntax`.
 
 The lower-level compatibility form remains available for split view/event
 channels:
@@ -858,11 +1109,12 @@ Current implementation:
 ## Projection
 
 ```clojure
-(io:xr graph-io receipt)
+(io:xr graph-io)
 ```
 
 Current implementation:
 
 - `io:xr` is implemented in the compiler-2 runtime env;
+- it takes one graph cell and returns the generated receipt cell;
 - `xr-io` remains as the older compatibility spelling;
 - it is a boundary-effect output path, not a browser mutation primitive.

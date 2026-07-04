@@ -108,6 +108,67 @@
                     (into (slot-messages :car head-id collection-id network)
                           (slot-messages :cdr tail-id collection-id network))))})))
 
+(def list-empty-marker :compiler-2/list-empty)
+
+(defn- compile-direct-form
+  [state form role]
+  (let [compile* (requiring-resolve 'propagators.compiler-2.core/g:compile)
+        [state' binding] (compile* form
+                                   (:env state)
+                                   (child state role))]
+    [(assoc state' :path (:path state)) binding]))
+
+(defn list-operator
+  []
+  (operator-value/operator-closure
+   {:name 'list
+    :direct-installer
+    (fn [state operand-forms out-id]
+      (let [[state' element-bindings]
+            (reduce
+             (fn [[state acc] [idx form]]
+               (let [[state' binding] (compile-direct-form state
+                                                           form
+                                                           [:list-element idx])]
+                 [state' (conj acc binding)]))
+             [state []]
+             (map-indexed vector operand-forms))
+            element-ids (mapv env/binding-id element-bindings)]
+        (when-not (every? some? element-ids)
+          (throw (ex-info "list elements must compile to cells"
+                          {:bindings element-bindings})))
+        (let [[state'' empty-binding] (new-cell state'
+                                                :list-empty
+                                                list-empty-marker)
+              empty-id (env/binding-id empty-binding)
+              [state''' cons-ids]
+              (reduce
+               (fn [[state ids] idx]
+                 (if (zero? idx)
+                   [state (conj ids out-id)]
+                   (let [[state' binding] (new-cell state [:list-cons idx])]
+                     [state' (conj ids (env/binding-id binding))])))
+               [state'' []]
+               (range (count element-ids)))
+              tail-ids (conj (vec (rest cons-ids)) empty-id)
+              [installed-prop-ids network']
+              (reduce
+               (fn [[acc-prop-ids network] [head-id tail-id collection-id]]
+                 (let [network (reduce ensure-cell
+                                       network
+                                       [head-id tail-id collection-id])
+                       [ids network'] ((obj/p:cons head-id
+                                                   tail-id
+                                                   collection-id)
+                                       network)]
+                   [(into acc-prop-ids (prop-ids ids)) network']))
+               [[] (:net state''')]
+               (map vector element-ids tail-ids cons-ids))]
+          [(-> state'''
+               (assoc :net network')
+               (add-props installed-prop-ids))
+           (env/cell-binding out-id)])))}))
+
 (defn- accessor-operator
   [slot-key installer name]
   (letfn [(plan [arg-ids out-id]
@@ -361,26 +422,47 @@
       a-update (conj (message b a-update))
       b-update (conj (message a b-update)))))
 
+(declare forward-sync-messages)
+
+(defn- chain-forward-sync-messages
+  [network ids]
+  (into []
+        (mapcat (fn [[a b]]
+                  (forward-sync-messages network a b)))
+        (partition 2 1 ids)))
+
+(defn- chain-sync-messages
+  [network ids]
+  (into []
+        (mapcat (fn [[a b]]
+                  (sync-messages network a b)))
+        (partition 2 1 ids)))
+
 (defn- forward-sync-messages
   [network a b]
   (if-let [a-update (sync-update network a)]
     [(message b a-update)]
     []))
 
+(defn- sync-chain-ids
+  [name arg-ids]
+  (let [arg-ids (vec arg-ids)]
+    (when (< (count arg-ids) 2)
+      (throw (ex-info (str name " expects at least two arguments")
+                      {:arg-ids arg-ids})))
+    arg-ids))
+
 (defn sync-operator []
   (operator-value/propagator-operator
    {:name '->
     :output-selector (fn [arg-ids fallback-id]
-                       (let [[_ b] (vec arg-ids)]
-                         [(or b fallback-id)]))
+                       (let [arg-ids (sync-chain-ids '-> arg-ids)]
+                         [(or (peek arg-ids) fallback-id)]))
     :input-selector (fn [arg-ids _fallback-id _context-id]
-                      (let [[a b] (vec arg-ids)]
-                        (when-not (and a b (= 2 (count arg-ids)))
-                          (throw (ex-info "-> expects exactly two arguments"
-                                          {:arg-ids arg-ids})))
-                        [a]))
+                      (pop (sync-chain-ids '-> arg-ids)))
     :activate (fn [current-net inputs outputs _context-id]
-                (forward-sync-messages current-net (first inputs) (first outputs)))}))
+                (let [chain (conj (vec inputs) (first outputs))]
+                  (chain-forward-sync-messages current-net chain)))}))
 
 (defn- switch-ids
   [arg-ids fallback-id]
@@ -535,17 +617,12 @@
   (operator-value/propagator-operator
    {:name '<->
     :output-selector (fn [arg-ids fallback-id]
-                       (let [[_ b] (vec arg-ids)]
-                         (if b [b (first (vec arg-ids))] [fallback-id])))
+                       (let [arg-ids (sync-chain-ids '<-> arg-ids)]
+                         [(or (peek arg-ids) fallback-id)]))
     :input-selector (fn [arg-ids _fallback-id _context-id]
-                      (let [[a b] (vec arg-ids)]
-                        (when-not (and a b (= 2 (count arg-ids)))
-                          (throw (ex-info "<-> expects exactly two arguments"
-                                          {:arg-ids arg-ids})))
-                        [a b]))
+                      (sync-chain-ids '<-> arg-ids))
     :activate (fn [current-net inputs _outputs _context-id]
-                (let [[a b] inputs]
-                  (sync-messages current-net a b)))}))
+                (chain-sync-messages current-net inputs))}))
 
 (defn- bind-default-tms-operators
   [compiler-env]
@@ -578,6 +655,7 @@
        (env/bind-at 'behavior? (predicate-operator 'behavior? :behavior) 0)
        (env/bind-at 'tms? (predicate-operator 'tms? :tms) 0)
        (env/bind-at 'p:cons (cons-operator) 0)
+       (env/bind-at 'list (list-operator) 0)
        (env/bind-at 'p:slot (slot-operator) 0)
        (env/bind-at 'p:car (accessor-operator :car obj/p:car "p:car") 0)
        (env/bind-at 'p:cdr (accessor-operator :cdr obj/p:cdr "p:cdr") 0)
