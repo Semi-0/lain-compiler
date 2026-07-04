@@ -2,21 +2,32 @@ First compiler-2 prototype scope:
 
 - first slice: ordinary application, `let-cell`, `def-net`, `network`, `cell`,
   existing `::`, and existing `switch`.
-- sugar after that: Clojure-like `let`, `def-cell`, and `when`.
-- later: recursion syntax, compound data syntax, predicates, reflection, the
+- sugar after that: Clojure-like `let`, `def-cell`, and topology-lazy `when`.
+- later: recursion syntax, compound data syntax, reflection, the
   remaining closure/predicate behavior history APIs, IO, networking, and macros.
 - key reflective target: `compile` / `evaluate` should compile expressions into
   an isolated sub-env, so experiments can extend language behavior without
   mutating the core env.
 
-Current checkpoint, 2026-07-03:
+Current checkpoint, 2026-07-04:
 
 - Implemented compiler-2 surface:
   - ordinary application, `let-cell`, `def`, `def-net`, `network`, `cell`, and
     declared-output closure application;
+  - `def-cell` free-cell declarations, `def-cells`, and `def-cell` expression
+    binding for cell-producing expressions;
+  - Clojure-like `let` as syntax over scoped cells plus ordinary `->` binding;
+  - `def-constraint` as a direct topology installer: each declared argument is
+    both an input and output cell for the compound propagator body;
   - compound pair access through `cons`, `car`, and `cdr`;
   - generic compound slot access through `p:slot`, usable in ordinary
     expressions and inside compiler-2 network closures;
+  - value-level conditionals `if`, `branch`, and `cond`, backed by ordinary
+    switch/sync behavior rather than topology creation;
+  - projection predicates `contradiction?`, `value?`, `symbol?`, `string?`,
+    `number?`, `boolean?`, `cell?`, `network?`, `closure?`, `behavior?`, and
+    `tms?`; `nothing?` is present but intentionally does not turn absence into a
+    durable boolean fact;
   - a behavior/TMS default entry through
     `propagators.compiler-2.main/compile-source-with-behavior-tms`.
 - Implemented behavior/TMS surface:
@@ -64,6 +75,12 @@ Current checkpoint, 2026-07-03:
     another compiled network call, retracted to `nothing`, and brought back by a
     higher-epoch premise fact;
   - `switch` and forward sync are covered in the behavior/TMS default env;
+  - immediate syntax-design coverage is now roughly 13-16 items beyond the
+    original first slice, depending on whether predicate aliases are counted
+    individually or as one family;
+  - topology-lazy `when` is not switch sugar. It belongs to the accumulating
+    GUR lowering path because it builds/declarations topology only after the
+    guard is present;
   - recursive syntax is not implemented. A self-recursive `def-net` currently
     compiles into a silent non-productive network whose result is `nothing`,
     instead of raising an explicit unsupported-recursion error.
@@ -108,7 +125,7 @@ until they have semantics different from normal application.
 ;; clojure like expr
 (let [<cell> <expr>/<cell>] <body>)
 
-Prototype: keep `let-cell`; add `let` only as sugar over named cells and sync.
+Implemented: `let` is sugar over scoped cells and ordinary `->` binding.
 
 2. network declaration
 
@@ -131,10 +148,52 @@ Later: tail recursion is not part of the first syntax slice.
   <body>
 )
 
+Implemented: `def-constraint` binds a direct compiler-2 installer. Applying a
+constraint uses each applicant as both an input and an output; it does not use
+the declared-output closure protocol and does not require doubled applicants.
+
+```clojure
+(def-constraint same [a b]
+  (<-> a b))
+(same x y)
+```
+
+(def-cell <cell-name>)
+
+Declare a named free cell, equivalent in binding behavior to `(def <cell-name>)`
+with no value. This is the ergonomic form for creating a named unbounded cell:
+
+```clojure
+(def-cell out)
+(-> (+ 1 2) out)
+```
+
+For several free cells, use `def-cells`:
+
+```clojure
+(def-cells a b c out)
+```
+
+This is shorthand for:
+
+```clojure
+(def-cell a)
+(def-cell b)
+(def-cell c)
+(def-cell out)
+```
+
+`def-cell` with an expression binds the name to a cell-producing expression:
+
+```clojure
 (def-cell <cell-name>
-  [<input-cells> ...]
-  <body>
-)
+  (cell [<input-cells> ...]
+    <body>))
+```
+
+Here the second form is intentionally not a free-cell declaration. The
+`cell-expr` is a cell closure/value, such as `(cell [input-cells] <body>)`,
+that returns a cell when applied.
 
 annoymous network
 (net [<input-cells> ...] [<output-cells> ...]
@@ -158,7 +217,9 @@ result cell.
 (switch <condition-cell> <input> <output>)
 
 Prototype: keep `switch` first because it already exists as an operator.
-Add `when` only after it lowers to existing lazy topology.
+Add `when` only after it lowers to existing lazy topology. This is distinct
+from value-level `switch`: `when` is a GUR topology builder, not a value
+predicate.
 
 (if <condition-cell> <then-cell> <else-cell>)
 
@@ -167,6 +228,9 @@ Add `when` only after it lowers to existing lazy topology.
 (cond [<condition-a> <body-a>
        <condition-b> <body-b>
        <else> <out-else>])
+
+Implemented: `if`, `branch`, and `cond` are value-level conditionals. They route
+values through existing switch/sync behavior and do not lazily build topology.
 
 4. recursion
 
@@ -206,6 +270,11 @@ cell?
 propagator-rep?
 graph?
 
+Implemented predicate surface: `contradiction?`, `value?`, `symbol?`,
+`string?`, `number?`, `boolean?`, `cell?`, `network?`, `closure?`,
+`behavior?`, and `tms?`. `nothing?` is bound, but it waits on absent information
+instead of asserting a boolean from lack of evidence.
+
 7. built-in functions
 basic arithmetic (+ - * /)
 
@@ -218,11 +287,44 @@ Self Reflectivity:
 (name <cell/propagator> <out>)
 (compile <expr-string> <env>)
 (evaluate <expr> <env>)
+(execute-sub-env <parent-env> <expr> <out>)
+(virtual-sub-env <parent-env> <expr> <out>)
 
 Power: these are not just introspection helpers. They should create and run
 compiler-2 expressions inside a sub-env isolated from the core env. The passed
 env is the extension boundary: user/compiler experiments can add syntax,
 operators, or bindings there without changing the trusted base environment.
+
+Implemented today: `execute-sub-env` is the current runtime primitive. It reads
+a parent compiler env and an expression, creates a child env with
+`env/extend-env`, compiles the expression against that child env, runs the newly
+declared props once, and projects the result to `out`.
+
+Safety boundary of current `execute-sub-env`:
+
+- child bindings are isolated in the child frame;
+- the parent env object is not extended in place;
+- parent lexical cells remain ordinary reachable cells. If child code resolves a
+  parent binding and installs topology that writes to it, that parent cell can
+  still receive messages.
+
+Design target: `virtual-sub-env` is the safe self-reflective variant. It should
+construct the child env as a compound object and compile user/compiler code
+inside it, but parent lexical bindings should enter through read avatars or
+projected values. Writes should leave the virtual env only through declared
+outputs/effects. This makes it possible to experiment with compiler extensions,
+behavior handlers, custom merge/strongest projections, and reflective
+evaluation without letting sub-env code directly mutate parent-env cells.
+
+For a safe reflective system:
+
+- `execute-sub-env` remains the pragmatic trusted primitive;
+- `virtual-sub-env` becomes the capability boundary for untrusted or
+  experimental compiler code;
+- parent env extension is data: new syntax/operators/handlers are ordinary env
+  bindings in the virtual env;
+- outward communication is explicit projection, not implicit writes to parent
+  lexical cells.
 
 ;; dangerous!!
 (env-snap <out>)
@@ -266,8 +368,81 @@ Search:
 (plot <cell> <out>)
 (graph <graph> <out>)
 (network-io <graph> <out>)
-(slider-io <cell> <out>)
+(slider-io <widget-id> <view-cell> <event-source-cell> <out>)
+(slider-panel-io <panel-id>
+  <channel-name> <view-cell> <event-source-cell>
+  ...
+  <out>)
 (button-io <cell> <out>)
+
+Implemented TUI/runtime expression surface:
+
+- Ordinary non-declaration TUI blocks are expression blocks. The runtime wraps
+  them with a generated output cell and `(block-at % <next-index> out)`, so the
+  result is displayed in the next block.
+- Top-level declarations and IO forms are not auto-wrapped: `def`, `def-cell`,
+  `def-cells`, `def-net`, `def-constraint`, `->`, `<->`, `block-at`,
+  `be:block-at`, `trace`, `xr-io`, `slider-io`, and `slider-panel-io`.
+- `(block-at (instance <name>) <index> <value>)` writes the value to another TUI
+  block through the normal monotone block text path.
+- `(be:block-at (instance <name>) <index> <value>)` writes display output
+  through a latest-behavior display lane. Use this for repeated behavior/XR
+  updates where the block should show the newest projected value.
+
+Examples:
+
+```clojure
+(def-cell out)
+(-> (+ 1 2) out)
+(block-at (instance taro) 2 out)
+```
+
+```clojure
+(be:block-at (instance taro) 2 out)
+```
+
+Implemented XR graph/projection surface:
+
+- `(trace <cell> <graph-out>)` builds a semantic graph trace from a cell.
+- `(xr-io <graph> <receipt>)` emits a boundary effect that starts or refreshes
+  the XR/browser projection. The browser receives graph/widget projections; it
+  does not directly mutate arbitrary cells.
+- Widget IO forms register browser/XR controls. Browser events are keyed by
+  widget id and channel; the runtime resolves the registered event source cell
+  and injects a monotone behavior event.
+
+Slider examples:
+
+```clojure
+(def-cell gain-events)
+(def-cell gain)
+(def-cell widget)
+
+(def-net retain-event [acc update] [out]
+  (behavior-add-event acc update out))
+
+(behavior gain-events retain-event (behavior-empty-state) gain)
+(slider-io "gain" gain gain-events widget)
+```
+
+```clojure
+(def-cells a-events b-events c-events a b c widget)
+
+(def-net retain-event [acc update] [out]
+  (behavior-add-event acc update out))
+
+(behavior a-events retain-event (behavior-empty-state) a)
+(behavior b-events retain-event (behavior-empty-state) b)
+(behavior c-events retain-event (behavior-empty-state) c)
+
+(slider-panel-io "mix"
+  "a" a a-events
+  "b" b b-events
+  "c" c c-events
+  widget)
+
+(<-> (- (+ a b) c) out)
+```
 
 9. networking
 (share-io <collection-cell> <p2p-instance>)

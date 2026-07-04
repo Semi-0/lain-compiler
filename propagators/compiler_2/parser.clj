@@ -54,6 +54,22 @@
   (ast/let-cell (symbol-vector names "let-cell bindings")
                 (body-form body "let-cell")))
 
+(defn- parse-let [[bindings & body]]
+  (when-not (vector? bindings)
+    (parse-error "let bindings must be a vector" {:bindings bindings}))
+  (when (odd? (count bindings))
+    (parse-error "let bindings must contain name/expression pairs"
+                 {:bindings bindings}))
+  (let [pairs (partition 2 bindings)]
+    (doseq [[name _expr] pairs]
+      (when-not (symbol? name)
+        (parse-error "let binding names must be symbols"
+                     {:binding name})))
+    (ast/let* (mapv (fn [[name expr]]
+                      [name (parse-form expr)])
+                    pairs)
+              (body-form body "let"))))
+
 (defn- parse-network [[params & body]]
   (ast/network (symbol-vector params ":: params")
                (body-form body "::")))
@@ -75,6 +91,13 @@
                (symbol-vector outputs "def-net outputs")
                (body-form body "def-net")))
 
+(defn- parse-def-constraint [[name inputs & body]]
+  (when-not (symbol? name)
+    (parse-error "def-constraint name must be a symbol" {:name name}))
+  (ast/def-constraint name
+                      (symbol-vector inputs "def-constraint inputs")
+                      (body-form body "def-constraint")))
+
 (defn- parse-def [[name expr & more]]
   (when-not (symbol? name)
     (parse-error "def name must be a symbol" {:name name}))
@@ -84,15 +107,34 @@
   (ast/def* name (when (some? expr)
                    (parse-form expr))))
 
-(defn- parse-def-cell [[name inputs & body]]
+(defn- parse-def-cell [[name maybe-expr & body]]
   (when-not (symbol? name)
     (parse-error "def-cell name must be a symbol" {:name name}))
-  (when (nil? inputs)
-    (parse-error "def-cell expects a name, input vector, and body"
-                 {:name name}))
-  (ast/def-cell name
-                (symbol-vector inputs "def-cell inputs")
-                (body-form body "def-cell")))
+  (cond
+    (nil? maybe-expr)
+    (ast/def* name nil)
+
+    (vector? maybe-expr)
+    (ast/def-cell name
+                  (symbol-vector maybe-expr "def-cell inputs")
+                  (body-form body "def-cell"))
+
+    (seq body)
+    (parse-error "def-cell expression form expects only a name and expression"
+                 {:name name :expr maybe-expr :extra body})
+
+    :else
+    (ast/def* name (parse-form maybe-expr))))
+
+(defn- parse-def-cells [names]
+  (when-not (seq names)
+    (parse-error "def-cells expects at least one name" {:names names}))
+  (doseq [name names]
+    (when-not (symbol? name)
+      (parse-error "def-cells names must be symbols" {:name name})))
+  (apply ast/sequence* (map #(ast/def* % nil) names)))
+
+(declare parse-cond-form)
 
 (defn- parse-compound-spec [spec]
   (cond
@@ -124,6 +166,53 @@
   (parse-error (str (first form) " is not part of compiler-2 target syntax")
                {:form form}))
 
+(defn- parse-if [[condition then-expr else-expr & more]]
+  (when (or (nil? condition)
+            (nil? then-expr)
+            (nil? else-expr)
+            (seq more))
+    (parse-error "if expects condition, then expression, and else expression"
+                 {:condition condition
+                  :then then-expr
+                  :else else-expr
+                  :extra more}))
+  (ast/app (ast/sym 'if)
+           (parse-form condition)
+           (parse-form then-expr)
+           (parse-form else-expr)))
+
+(defn- parse-cond-form [[clauses]]
+  (when-not (vector? clauses)
+    (parse-error "cond expects one vector of condition/expression clauses"
+                 {:clauses clauses}))
+  (when (odd? (count clauses))
+    (parse-error "cond clauses must contain condition/expression pairs"
+                 {:clauses clauses}))
+  (letfn [(build [pairs]
+            (let [[[condition expr] & more] pairs]
+              (cond
+                (nil? condition)
+                (parse-error "cond expects at least one clause"
+                             {:clauses clauses})
+
+                (= 'else condition)
+                (if (seq more)
+                  (parse-error "cond else clause must be last"
+                               {:clauses clauses})
+                  (parse-form expr))
+
+                (seq more)
+                (ast/app (ast/sym 'if)
+                         (parse-form condition)
+                         (parse-form expr)
+                         (build more))
+
+                :else
+                (ast/app (ast/sym 'switch)
+                         (parse-form expr)
+                         (parse-form condition)))))]
+    (build (partition 2 clauses))))
+
 (defn- parse-application [forms]
   (apply ast/app (map parse-form forms)))
 
@@ -133,14 +222,19 @@
   (cond
     (seq? form)
     (case (first form)
+      let (parse-let (rest form))
       let-cell (parse-let-cell (rest form))
       :compiler/network (parse-network (rest form))
       cell (parse-cell (rest form))
       network (parse-network-form (rest form))
       def-net (parse-def-net (rest form))
+      def-constraint (parse-def-constraint (rest form))
       def (parse-def (rest form))
       def-cell (parse-def-cell (rest form))
+      def-cells (parse-def-cells (rest form))
       compound (parse-compound (rest form))
+      if (parse-if (rest form))
+      cond (parse-cond-form (rest form))
       app-> (removed-form form)
       do (removed-form form)
       let-network (removed-form form)

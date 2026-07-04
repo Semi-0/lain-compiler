@@ -416,6 +416,121 @@
                       [out-id] outputs]
                   (switch-messages current-net value-id condition-id out-id)))}))
 
+(defn if-operator []
+  (operator-value/propagator-operator
+   {:name 'if
+    :output-selector (fn [arg-ids fallback-id]
+                       (let [[_condition-id _then-id _else-id explicit-out-id]
+                             (vec arg-ids)]
+                         [(or explicit-out-id fallback-id)]))
+    :input-selector (fn [arg-ids _fallback-id _context-id]
+                      (when-not (<= 3 (count arg-ids) 4)
+                        (throw (ex-info "if expects condition, then, else, and optional output"
+                                        {:arg-ids arg-ids})))
+                      (subvec (vec arg-ids) 0 3))
+    :activate (fn [current-net inputs outputs _context-id]
+                (let [[condition-id then-id else-id] inputs
+                      [out-id] outputs
+                      condition (unwrap-compiler-value
+                                 (net/network-cell-strongest current-net
+                                                            condition-id))]
+                  (cond
+                    (value/contradiction? condition)
+                    [(message out-id value/contradiction)]
+
+                    (value/unusable? condition)
+                    []
+
+                    condition
+                    (forward-sync-messages current-net then-id out-id)
+
+                    :else
+                    (forward-sync-messages current-net else-id out-id))))}))
+
+(defn branch-operator []
+  (operator-value/propagator-operator
+   {:name 'branch
+    :output-selector (fn [arg-ids _fallback-id]
+                       (let [[_condition-id _then-in then-out _else-in else-out]
+                             (vec arg-ids)]
+                         (when-not (and then-out else-out (= 5 (count arg-ids)))
+                           (throw (ex-info "branch expects condition, then-in, then-out, else-in, and else-out"
+                                           {:arg-ids arg-ids})))
+                         [then-out else-out]))
+    :input-selector (fn [arg-ids _fallback-id _context-id]
+                      (let [[condition-id then-in _then-out else-in _else-out]
+                            (vec arg-ids)]
+                        [condition-id then-in else-in]))
+    :activate (fn [current-net inputs outputs _context-id]
+                (let [[condition-id then-in else-in] inputs
+                      [then-out else-out] outputs
+                      condition (unwrap-compiler-value
+                                 (net/network-cell-strongest current-net
+                                                            condition-id))]
+                  (cond
+                    (value/contradiction? condition)
+                    [(message then-out value/contradiction)
+                     (message else-out value/contradiction)]
+
+                    (value/unusable? condition)
+                    []
+
+                    condition
+                    (forward-sync-messages current-net then-in then-out)
+
+                    :else
+                    (forward-sync-messages current-net else-in else-out))))}))
+
+(defn- predicate-messages
+  [network pred value-id out-id]
+  (let [v (net/network-cell-strongest network value-id)]
+    (cond
+      (value/nothing? v)
+      []
+
+      (value/contradiction? v)
+      [(message out-id (case pred
+                         :contradiction true
+                         :value false
+                         false))]
+
+      :else
+      [(message out-id
+                (case pred
+                  :nothing false
+                  :contradiction false
+                  :value true
+                  :symbol (core/symbol? v)
+                  :string (core/string? v)
+                  :number (core/number? v)
+                  :boolean (or (true? v) (false? v))
+                  :cell (ids/node-id? v)
+                  :network (net/net? v)
+                  :closure ((requiring-resolve
+                             'propagators.compiler-2.closure-value/closure-info?)
+                            v)
+                  :behavior ((requiring-resolve
+                              'propagators.datastructures.behavior/behavior-value?)
+                             v)
+                  :tms (tms/distributed-value? v)
+                  false))])))
+
+(defn predicate-operator
+  [name pred]
+  (operator-value/propagator-operator
+   {:name name
+    :output-selector (fn [arg-ids fallback-id]
+                       (let [[_value-id explicit-out-id] (vec arg-ids)]
+                         [(or explicit-out-id fallback-id)]))
+    :input-selector (fn [arg-ids _fallback-id _context-id]
+                      (let [[value-id _out-id] (vec arg-ids)]
+                        (when-not (and value-id (<= 1 (count arg-ids) 2))
+                          (throw (ex-info (str name " expects value and optional output")
+                                          {:arg-ids arg-ids})))
+                        [value-id]))
+    :activate (fn [current-net inputs outputs _context-id]
+                (predicate-messages current-net pred (first inputs) (first outputs)))}))
+
 (defn bi-sync-operator []
   (operator-value/propagator-operator
    {:name '<->
@@ -448,6 +563,20 @@
        (env/bind-at '* (operator-builder core/*) 0)
        (env/bind-at '/ (operator-builder core//) 0)
        (env/bind-at 'switch (switch-operator) 0)
+       (env/bind-at 'if (if-operator) 0)
+       (env/bind-at 'branch (branch-operator) 0)
+       (env/bind-at 'nothing? (predicate-operator 'nothing? :nothing) 0)
+       (env/bind-at 'contradiction? (predicate-operator 'contradiction? :contradiction) 0)
+       (env/bind-at 'value? (predicate-operator 'value? :value) 0)
+       (env/bind-at 'symbol? (predicate-operator 'symbol? :symbol) 0)
+       (env/bind-at 'string? (predicate-operator 'string? :string) 0)
+       (env/bind-at 'number? (predicate-operator 'number? :number) 0)
+       (env/bind-at 'boolean? (predicate-operator 'boolean? :boolean) 0)
+       (env/bind-at 'cell? (predicate-operator 'cell? :cell) 0)
+       (env/bind-at 'network? (predicate-operator 'network? :network) 0)
+       (env/bind-at 'closure? (predicate-operator 'closure? :closure) 0)
+       (env/bind-at 'behavior? (predicate-operator 'behavior? :behavior) 0)
+       (env/bind-at 'tms? (predicate-operator 'tms? :tms) 0)
        (env/bind-at 'p:cons (cons-operator) 0)
        (env/bind-at 'p:slot (slot-operator) 0)
        (env/bind-at 'p:car (accessor-operator :car obj/p:car "p:car") 0)
@@ -475,6 +604,20 @@
       (env/bind-at 'p:slot (slot-operator) 0)
       (env/bind-at 'execute-sub-env (execute-sub-env-operator) 0)
       (env/bind-at 'switch (switch-operator) 0)
+      (env/bind-at 'if (if-operator) 0)
+      (env/bind-at 'branch (branch-operator) 0)
+      (env/bind-at 'nothing? (predicate-operator 'nothing? :nothing) 0)
+      (env/bind-at 'contradiction? (predicate-operator 'contradiction? :contradiction) 0)
+      (env/bind-at 'value? (predicate-operator 'value? :value) 0)
+      (env/bind-at 'symbol? (predicate-operator 'symbol? :symbol) 0)
+      (env/bind-at 'string? (predicate-operator 'string? :string) 0)
+      (env/bind-at 'number? (predicate-operator 'number? :number) 0)
+      (env/bind-at 'boolean? (predicate-operator 'boolean? :boolean) 0)
+      (env/bind-at 'cell? (predicate-operator 'cell? :cell) 0)
+      (env/bind-at 'network? (predicate-operator 'network? :network) 0)
+      (env/bind-at 'closure? (predicate-operator 'closure? :closure) 0)
+      (env/bind-at 'behavior? (predicate-operator 'behavior? :behavior) 0)
+      (env/bind-at 'tms? (predicate-operator 'tms? :tms) 0)
       (env/bind-at '-> (sync-operator) 0)
       (env/bind-at '<-> (bi-sync-operator) 0)))
 

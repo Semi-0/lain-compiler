@@ -53,31 +53,34 @@
 
 (defmethod g:apply :primitive
   [operator-binding operand-forms _calling-env state out-id]
-  (let [app-id (:application/app-id state)
+  (if-let [direct-install (and (operator-value/operator-closure? operator-binding)
+                               (operator-value/operator-direct-installer operator-binding))]
+    (direct-install state operand-forms out-id)
+    (let [app-id (:application/app-id state)
         operator-ast (:application/operator-ast state)
         context-id (:context-id state)
         [state' arg-bindings] (common/compile-args g:compile state operand-forms)
         arg-ids (mapv env/binding-id arg-bindings)]
-    (when-not (every? some? arg-ids)
-      (throw (ex-info "application arguments must compile to cells"
-                      {:args arg-bindings})))
-    (let [[state'' args-binding] (common/install-argument-object state' arg-ids)
-          args-id (env/binding-id args-binding)
-          [state''' operator-binding'] (common/install-operator-object state''
-                                                                       operator-binding)
-          operator-id (env/binding-id operator-binding')
-          result-id (h/output-id operator-binding arg-ids out-id)]
-      [(-> state'''
-           (assoc :application/args-id args-id
-                  :application/arg-ids arg-ids
-                  :application/lowering :primitive)
-           (install-application-propagator
-            app-id
-            operator-ast
-            operator-id
-            result-id
-            context-id))
-       (env/cell-binding result-id)])))
+      (when-not (every? some? arg-ids)
+        (throw (ex-info "application arguments must compile to cells"
+                        {:args arg-bindings})))
+      (let [[state'' args-binding] (common/install-argument-object state' arg-ids)
+            args-id (env/binding-id args-binding)
+            [state''' operator-binding'] (common/install-operator-object state''
+                                                                         operator-binding)
+            operator-id (env/binding-id operator-binding')
+            result-id (h/output-id operator-binding arg-ids out-id)]
+        [(-> state'''
+             (assoc :application/args-id args-id
+                    :application/arg-ids arg-ids
+                    :application/lowering :primitive)
+             (install-application-propagator
+              app-id
+              operator-ast
+              operator-id
+              result-id
+              context-id))
+         (env/cell-binding result-id)]))))
 
 (defn- closure-output-symbols
   [output]
@@ -195,6 +198,21 @@
                            (ast/names expr)
                            (ast/body expr)))
 
+(defmethod g:compile :let
+  [expr _env state]
+  (let [bindings (ast/bindings expr)
+        names (mapv first bindings)
+        binding-forms
+        (mapv (fn [[name value-expr]]
+                (ast/app (ast/sym '->) value-expr (ast/sym name)))
+              bindings)]
+    (common/compile-let-cell
+     g:compile
+     state
+     names
+     (apply ast/sequence*
+            (concat binding-forms [(ast/body expr)])))))
+
 (defmethod g:compile :network
   [expr _env state]
   (compile-network state (ast/inputs expr) nil (ast/body expr)))
@@ -213,6 +231,51 @@
                                         (ast/name expr)
                                         closure-binding))
      closure-binding]))
+
+(defn- constraint-operator
+  [name lexical-env inputs body]
+  (operator-value/operator-closure
+   {:name name
+    :direct-installer
+    (fn [state operand-forms _out-id]
+      (let [[state' arg-bindings] (common/compile-args g:compile state operand-forms)
+            arg-ids (mapv env/binding-id arg-bindings)]
+        (when-not (every? some? arg-ids)
+          (throw (ex-info "constraint arguments must compile to cells"
+                          {:constraint name
+                           :args arg-bindings})))
+        (when-not (= (count inputs) (count arg-ids))
+          (throw (ex-info "constraint application has wrong arity"
+                          {:constraint name
+                           :inputs inputs
+                           :arg-count (count arg-ids)})))
+        (let [constraint-env
+              (reduce (fn [scoped-env [sym id]]
+                        (env/bind-local scoped-env sym (env/cell-binding id)))
+                      (env/sub-env lexical-env)
+                      (map vector inputs arg-ids))
+              [state'' body-binding]
+              (g:compile body
+                         constraint-env
+                         (h/child (assoc state' :env constraint-env)
+                                  [:constraint name]))]
+          [(assoc state'' :env (:env state'))
+           (env/cell-binding (or (peek arg-ids)
+                                 (:binding/id body-binding)))])))}))
+
+(defmethod g:compile :def-constraint
+  [expr _env state]
+  (let [operator (constraint-operator (ast/name expr)
+                                      (:env state)
+                                      (ast/inputs expr)
+                                      (ast/body expr))
+        [state' result-binding] (h/new-cell state
+                                            [:def-constraint (ast/name expr)]
+                                            operator)]
+    [(assoc state' :env (env/bind-local (:env state')
+                                        (ast/name expr)
+                                        operator))
+     result-binding]))
 
 (defmethod g:compile :def
   [expr _env state]

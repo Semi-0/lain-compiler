@@ -14,6 +14,7 @@
 (def names-slot :ast/names)
 (def inputs-slot :ast/inputs)
 (def output-slot :ast/output)
+(def bindings-slot :ast/bindings)
 
 (def ast-slots
   #{type-slot
@@ -23,6 +24,7 @@
     args-slot
     body-slot
     names-slot
+    bindings-slot
     inputs-slot
     output-slot})
 
@@ -51,6 +53,11 @@
                names-slot (vec names)
                body-slot (ast body)}))
 
+(defn let* [bindings body]
+  (ast-object {type-slot :let
+               bindings-slot (vec bindings)
+               body-slot (ast body)}))
+
 (defn network [inputs body]
   (ast-object {type-slot :network
                inputs-slot (vec inputs)
@@ -67,6 +74,12 @@
                name-slot name
                inputs-slot (vec inputs)
                output-slot output
+               body-slot (ast body)}))
+
+(defn def-constraint [name inputs body]
+  (ast-object {type-slot :def-constraint
+               name-slot name
+               inputs-slot (vec inputs)
                body-slot (ast body)}))
 
 (defn def* [name body]
@@ -106,5 +119,6 @@
 (defn args [expr] (slot expr args-slot))
 (defn body [expr] (slot expr body-slot))
 (defn names [expr] (slot expr names-slot))
+(defn bindings [expr] (slot expr bindings-slot))
 (defn inputs [expr] (slot expr inputs-slot))
 (defn output [expr] (slot expr output-slot))

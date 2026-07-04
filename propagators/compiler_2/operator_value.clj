@@ -16,19 +16,21 @@
 (def kind-slot :operator/kind)
 (def input-selector-slot :operator/input-selector)
 (def install-slot :operator/install)
+(def direct-installer-slot :operator/direct-installer)
 (def activate-slot :operator/activate)
 (def output-selector-slot :operator/output-selector)
 (def contextual?-slot :operator/contextual?)
 (def name-slot :operator/name)
 
 (defn operator-closure
-  [{:keys [input-selector install activate output-selector contextual? name]}]
+  [{:keys [input-selector install direct-installer activate output-selector contextual? name]}]
   (obj/compound-object
    (cond-> {kind-slot operator-kind
             activate-slot activate
             contextual?-slot (true? contextual?)}
      input-selector (assoc input-selector-slot input-selector)
      install (assoc install-slot install)
+     direct-installer (assoc direct-installer-slot direct-installer)
      output-selector (assoc output-selector-slot output-selector)
      name (assoc name-slot name))))
 
@@ -40,6 +42,9 @@
 
 (defn operator-install [operator]
   (obj/slot-value operator install-slot))
+
+(defn operator-direct-installer [operator]
+  (obj/slot-value operator direct-installer-slot))
 
 (defn operator-activate [operator]
   (obj/slot-value operator activate-slot))
