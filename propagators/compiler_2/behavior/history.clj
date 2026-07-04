@@ -78,13 +78,36 @@
           (nil? selected) []
           :else [(message out-id (history-behavior-value v [selected]))])))))
 
+(defn- empty-latest-messages
+  [out-id]
+  [(message out-id
+            (behavior/behavior-value
+             {:history hist/empty-history
+              :source-keys #{}
+              :reducer behavior/latest-value-reducer-id}))])
+
+(defn- latest-output-selector
+  [arg-ids fallback-id]
+  (let [arg-ids (vec arg-ids)]
+    [(or (nth arg-ids 1 nil) fallback-id)]))
+
+(defn- latest-input-selector
+  [arg-ids _fallback-id _context-id]
+  (let [arg-ids (vec arg-ids)]
+    (when-not (<= 0 (count arg-ids) 2)
+      (throw (ex-info "latest expects no args, behavior, or behavior plus output"
+                      {:arg-ids arg-ids})))
+    (if (empty? arg-ids) [] [(first arg-ids)])))
+
 (defn latest-operator []
   (operator-value/propagator-operator
    {:name 'latest
-    :output-selector (optional-output-selector 1)
-    :input-selector (input-selector "latest expects behavior and optional output" 1)
+    :output-selector latest-output-selector
+    :input-selector latest-input-selector
     :activate (fn [network inputs outputs _context-id]
-                (latest-messages network (first inputs) (first outputs)))}))
+                (if (seq inputs)
+                  (latest-messages network (first inputs) (first outputs))
+                  (empty-latest-messages (first outputs))))}))
 
 (defn- last-messages
   [network behavior-id index-id out-id]

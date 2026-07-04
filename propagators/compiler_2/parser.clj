@@ -134,6 +134,52 @@
       (parse-error "def-cells names must be symbols" {:name name})))
   (apply ast/sequence* (map #(ast/def* % nil) names)))
 
+(defn- suffix-symbol
+  [sym suffix]
+  (symbol (namespace sym) (str (name sym) suffix)))
+
+(defn- behavior-declaration-forms
+  [name]
+  (when-not (symbol? name)
+    (parse-error "behavior name must be a symbol" {:name name}))
+  (let [events-name (suffix-symbol name "-events")
+        reducer-name (suffix-symbol name "-retain-latest")]
+    [(list 'def-cells events-name name)
+     (list 'def-net reducer-name '[acc update] '[out]
+           (list 'let-cell '[full]
+                 (list 'behavior-add-event 'acc 'update 'full)
+                 (list 'behavior-retain-last 'full 1 'out)))
+     (list 'behavior
+           events-name
+           reducer-name
+           (list 'behavior-empty-state)
+           name)]))
+
+(defn- behavior-wiring-forms
+  [name]
+  (subvec (vec (behavior-declaration-forms name)) 1))
+
+(defn- parse-def-behavior [[name & more]]
+  (when (or (nil? name) (seq more))
+    (parse-error "def-behavior expects one name"
+                 {:name name :extra more}))
+  (apply ast/sequence* (map parse-form (behavior-declaration-forms name))))
+
+(defn- parse-def-behaviors [names]
+  (when-not (seq names)
+    (parse-error "def-behaviors expects at least one name" {:names names}))
+  (apply ast/sequence*
+         (map parse-form
+              (mapcat behavior-declaration-forms names))))
+
+(defn- parse-let-behavior [[names & body]]
+  (let [names (symbol-vector names "let-behavior bindings")
+        cell-names (mapcat (fn [name] [(suffix-symbol name "-events") name])
+                           names)
+        body* (concat (mapcat behavior-wiring-forms names) body)]
+    (ast/let-cell cell-names
+                  (body-form body* "let-behavior"))))
+
 (declare parse-cond-form)
 
 (defn- parse-compound-spec [spec]
@@ -232,6 +278,14 @@
       def (parse-def (rest form))
       def-cell (parse-def-cell (rest form))
       def-cells (parse-def-cells (rest form))
+      def-behavior (parse-def-behavior (rest form))
+      def-behaviour (parse-def-behavior (rest form))
+      def-behaviors (parse-def-behaviors (rest form))
+      def-behaviours (parse-def-behaviors (rest form))
+      define-behaviors (parse-def-behaviors (rest form))
+      define-behaviours (parse-def-behaviors (rest form))
+      let-behavior (parse-let-behavior (rest form))
+      let-behaviour (parse-let-behavior (rest form))
       compound (parse-compound (rest form))
       if (parse-if (rest form))
       cond (parse-cond-form (rest form))

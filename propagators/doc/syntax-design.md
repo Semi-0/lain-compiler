@@ -50,12 +50,16 @@ Implemented behavior/TMS surface:
   inputs `[acc next]` and one output;
 - `behavior` / `behavior-cell` and their prefixed aliases `be:behavior` /
   `be:behavior-cell` are the current behavior constructors;
+- `def-behavior`, `def-behaviors`, `define-behaviors`, `let-behavior`, and
+  `let-behaviour` lower to ordinary event-source cells plus latest-retaining
+  behavior pipelines;
 - behavior merge closures reuse the compiler-2 reducer adapter;
 - `behavior`, `latest`, `last`, `history`, `history-take`, `history-drop`, and
   `history-split-at` are compiler-2-backed. `be:latest`, `be:last`, and
-  `be:history` are prefixed aliases. `latest` / `be:latest` and `last` /
-  `be:last` return behavior values and remain composable with behavior
-  arithmetic.
+  `be:history` are prefixed aliases. `(be:latest)` creates an empty
+  latest-retaining behavior value; `(be:latest behavior)` projects an existing
+  behavior to its latest record. `latest` / `be:latest` and `last` / `be:last`
+  return behavior values and remain composable with behavior arithmetic.
 
 Still design/prototype work:
 
@@ -414,9 +418,7 @@ Current implementation:
   topology;
 - the terminal tail is the internal marker `:compiler-2/list-empty`;
 - `list` exists so higher-level syntax can pass normal linked structures
-  instead of pretending reader vectors are cells;
-- `io:slider-panel` uses `(list a b c)` as its public simplified argument
-  shape.
+  instead of pretending reader vectors are cells.
 
 ### Generic Slot Access
 
@@ -679,6 +681,21 @@ Verified code paths:
 (be:behavior events retain-latest (behavior-empty-state) retained)
 ```
 
+Latest-retaining behavior sugar:
+
+```clojure
+(def-behavior a)
+(def-behaviors a b c)
+(define-behaviors a b c)
+
+(let-behaviour [a b c]
+  (<-> (- (+ a b) c) out))
+```
+
+Each behavior name declares the visible behavior cell and its sibling event
+source, for example `a` and `a-events`, then wires `a-events` through a
+latest-retaining reducer into `a`.
+
 Current implementation:
 
 - behavior cells can be constructed from compiler-2-defined reducer closures;
@@ -686,7 +703,11 @@ Current implementation:
 - behavior merge closures reuse the compiler-2 reducer adapter and generic
   reducer-subnet machinery;
 - `be:behavior` and `be:behavior-cell` are implemented aliases for behavior
-  construction. `be` stands for behavior.
+  construction. `be` stands for behavior;
+- `def-behavior`, `def-behaviors`, `define-behaviors`, `let-behavior`, and
+  `let-behaviour` are parser-level sugar over `def-cells`, `def-net`,
+  `behavior`, `behavior-empty-state`, `behavior-add-event`, and
+  `behavior-retain-last`.
 
 Verified in tests:
 
@@ -705,6 +726,7 @@ Verified in tests:
 ```
 
 ```clojure
+(be:latest)
 (be:latest behavior)
 (be:last behavior index out)
 (be:history behavior start end out)
@@ -728,6 +750,10 @@ Current implementation:
   `history-split-at` are implemented;
 - `be:latest`, `be:last`, and `be:history` are implemented behavior-prefixed
   aliases;
+- `(be:latest)` creates an empty latest-retaining behavior value with no
+  current value before events arrive;
+- `(be:latest behavior)` projects an existing behavior to a behavior retaining
+  only the latest record;
 - `latest`, `be:latest`, `last`, and `be:last` return behavior values, so they
   compose with behavior arithmetic;
 - closure/predicate history operators remain design targets.
@@ -736,6 +762,8 @@ Verified in tests:
 
 - `compiler-2-behavior-syntax-latest-and-last-are-behaviors`;
 - `compiler-2-behavior-prefixed-projections-are-behaviors`;
+- `compiler-2-be-latest-zero-arg-builds-empty-latest-behavior`;
+- `compiler-2-behavior-declaration-sugar-retains-latest-events`;
 - `compiler-2-behavior-syntax-history-slices-return-behaviors`.
 
 ### TMS-Composed Behavior
@@ -859,9 +887,11 @@ Current implementation:
   them with a generated output cell and `(block-at % <next-index> out)`, so the
   result displays in the next block;
 - top-level declarations and IO forms are not auto-wrapped: `def`, `def-cell`,
-  `def-cells`, `def-net`, `def-constraint`, `->`, `<->`, `block`, `block-at`,
-  `be:block-at`, `trace`, `io:xr`, `io:slider`, `io:slider-panel`, and the
-  older compatibility forms `xr-io`, `slider-io`, and `slider-panel-io`;
+  `def-cells`, `def-net`, `def-constraint`, `def-behavior`,
+  `def-behaviors`, `define-behaviors`, `->`, `<->`, `block`, `block-at`,
+  `be:block-at`, `trace`, `io:xr`, `io:slider`, `io:slider-panel`,
+  `io:slider-panel-name`, and the older compatibility forms `xr-io`,
+  `slider-io`, and `slider-panel-io`;
 - `(block index)` returns the current TUI instance's block text cell;
 - `(block-at instance index)` returns the addressed instance's block text cell;
 - `(block index)` may bind future blocks; the runtime creates missing blank
@@ -1025,33 +1055,44 @@ Example:
 ### Slider Panel IO
 
 ```clojure
-(io:slider-panel (list a b c))
-(io:slider-panel "mix" (list a b c))
+(io:slider-panel a b c)
+(io:slider-panel-name "mix" a b c)
 ```
 
 Current implementation:
 
 - registers one browser/XR widget panel with one slider channel per cell;
-- the explicit id form uses the first argument as the panel id;
-- the one-argument form uses the default panel id `"panel"`;
-- channel names default from env cell symbols, so `(list a b c)` registers
-  channels `"a"`, `"b"`, and `"c"`;
-- each listed cell is both the view cell and event-source cell for its channel;
+- `io:slider-panel` uses the default panel id `"slider-panel-0"`;
+- `io:slider-panel-name` uses the first argument as the panel id;
+- channel names default from env cell symbols, so `(io:slider-panel a b c)`
+  registers channels `"a"`, `"b"`, and `"c"`;
+- each cell is the view cell for its channel. If a sibling event-source cell
+  exists by name, for example `a-events` for `a`, widget events route there;
+  otherwise the same cell is both the view cell and event-source cell;
 - applying `io:slider-panel` returns the generated panel descriptor cell;
-- public syntax uses `(list ...)`, which lowers to linked-list `p:cons`
-  topology. Vector syntax is not the documented compiler-2 surface here.
+- the old public `(io:slider-panel (list ...))` and
+  `(io:slider-panel "id" (list ...))` forms are removed. Use varargs cells and
+  `io:slider-panel-name` for explicit ids.
 
 Example:
 
 ```clojure
-(def-cells a b c)
-(io:slider-panel "mix" (list a b c))
+(define-behaviors a b c)
+(def out)
+(io:slider-panel a b c)
+(<-> (- (+ a b) c) out)
+```
+
+```clojure
+(define-behaviors a b c)
+(io:slider-panel-name "mix" a b c)
 ```
 
 Verified in tests:
 
 - `io-slider-panel-registers-channel-names-from-cell-symbols`;
-- `io-slider-panel-defaults-panel-id-with-list-syntax`.
+- `io-slider-panel-defaults-panel-id-with-varargs`;
+- `io-slider-panel-routes-behavior-views-to-sibling-event-sources`.
 
 The lower-level compatibility form remains available for split view/event
 channels:
