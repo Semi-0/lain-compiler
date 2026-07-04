@@ -445,6 +445,14 @@ Current implementation:
 (env-snap out)
 ```
 
+Future design targets:
+
+```clojure
+(env-snap env out)
+(serialize value file-or-json out)
+(deserialize file-or-json out)
+```
+
 Current implementation:
 
 - `execute-sub-env` is implemented as the pragmatic trusted primitive;
@@ -460,6 +468,19 @@ Current implementation:
   bindings should enter through read avatars/projected values, and writes should
   leave only through declared outputs/effects;
 - `env-snap` is intentionally marked dangerous and remains a design note.
+
+Future design notes:
+
+- `env-snap` should be mono-directional: it projects an env value into a cell
+  but should not let that snapshot feed back into and mutate the source env.
+- `env-snap` of itself should be contradiction, so the system cannot create an
+  infinite self-containing env value.
+- `serialize` / `deserialize` should support traced networks and closure values
+  as JSON artifacts. The first target is export/import of semantic traces,
+  compiler graph traces, call graph traces, and closure declarations.
+- Serialization should preserve ids, aliases, closure/env metadata, and graph
+  edge semantics needed for inspection. It should not serialize live scheduler
+  thread/runtime state as executable authority.
 
 ## TMS
 
@@ -551,12 +572,39 @@ Current implementation:
 (make-layered-datum store a-list)
 ```
 
+Future dynamic primitive package syntax:
+
+```clojure
+(define-primitive propagator-name
+  [input-a input-b out]
+  <clojure-code>)
+```
+
+```clojure
+(load-primitive-package "path/to/package.clj" package-receipt)
+```
+
 Current implementation:
 
 - these are design targets for user/compiler extension syntax;
 - the current recommended extension path is env-bound compiler-2 operators and
   behavior/TMS env composition;
 - layered datum surface syntax is not implemented here.
+
+Future design notes:
+
+- `define-primitive` should create an env-bound primitive propagator/operator.
+- The parameter vector follows the primitive propagator convention: input cells
+  first, output cell last.
+- The Clojure code should compile/load as an explicit dynamic package, not as
+  arbitrary ambient eval from normal user expressions.
+- Loaded packages should extend only the target compiler env or virtual sub-env
+  they are installed into. They should not mutate the trusted root env by
+  default.
+- A dynamic package should return a receipt/fact describing the installed
+  primitive names and package identity.
+- This surface is intentionally effectful and should be paired with
+  `virtual-sub-env` for safe self-reflective experiments.
 
 ## Search
 
@@ -609,6 +657,22 @@ Example:
 (xr-io graph receipt)
 ```
 
+Future pro tracer surface:
+
+```clojure
+(compiler-graph-trace target out)
+(call-graph-trace target out)
+(semantic-trace target out)
+```
+
+or, as explicit trace modes:
+
+```clojure
+(trace target :compiler-graph out)
+(trace target :call-graph out)
+(trace target :semantic out)
+```
+
 Current implementation:
 
 - `trace` builds a semantic graph trace from a cell;
@@ -616,6 +680,17 @@ Current implementation:
   projection;
 - the browser receives graph/widget projections and does not directly mutate
   arbitrary cells.
+
+Future design notes:
+
+- `compiler-graph-trace` should show compiler-produced topology and retained
+  compiler application/closure declarations.
+- `call-graph-trace` should show closure/operator applications and call
+  structure without expanding every primitive edge by default.
+- `semantic-trace` should show user-level semantic graph relationships and keep
+  compound propagators collapsed until the user requests deeper expansion.
+- Pro tracers should serialize to the same JSON graph artifact shape used by
+  `serialize`.
 
 Example:
 
