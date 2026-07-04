@@ -134,6 +134,31 @@ behavior construction path:
     (behavior-retain-last full 2 out)))
 ```
 
+The live runtime env also binds XR widget IO operators for browser/XR-driven
+behavior sources. Widget IO does not let the browser write arbitrary cells; it
+registers view/event-source pairs and the runtime injects epoch-keyed behavior
+events only through those declared channels:
+
+```clojure
+(let-cell [a-events b-events c-events a b c out widget]
+  (def-net retain-event [acc update] [out]
+    (behavior-add-event acc update out))
+  (behavior a-events retain-event (behavior-empty-state) a)
+  (behavior b-events retain-event (behavior-empty-state) b)
+  (behavior c-events retain-event (behavior-empty-state) c)
+  (slider-panel-io "mix"
+    "a" a a-events
+    "b" b b-events
+    "c" c c-events
+    widget)
+  (<-> (- (+ a b) c) out)
+  out)
+```
+
+For a panel, each user edit re-emits the latest known channel values at one
+runtime-owned epoch, so sparse behavior arithmetic receives aligned events
+while still preserving the underlying event history.
+
 `premise-closure` is sugar for a premise-marked network operator. It takes a
 wrapped `network`, a premise cell, and an epoch cell. Application runs the
 wrapped closure against an internal output cell, then emits only the
@@ -443,6 +468,11 @@ normal compiler-2 code:
 and `(trace next :downstream g)` follows outgoing semantic graph edges.
 Rendering is not part of propagation: trace propagators produce graph data, and
 the TUI/view layer renders graph values with Vijual stress-majorization layout.
+The trace graph is topology plus projection data, not a cell-content dump. Cell
+`content` is internal merge evidence; cell `strongest` is the readable truth.
+TUI and XR renderers may show only strongest-derived lightweight summaries, and
+runtime UI pulses should use explicit changed cell/node ids from the completed
+transaction rather than diffing raw serialized cell values.
 Top-level `(trace a :upstream g)` traces the semantic label `"a"` rather than
 only the local input cell of the trace expression. Concrete cell tracing remains
 available through explicit trace requests at the runtime API boundary.
