@@ -4,12 +4,12 @@
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.operator-value :as operator-value]
             [propagators.datastructures.dependency :as dependency]
             [propagators.datastructures.scope-source :as scope-source]
             [propagators.datastructures.tms.distributed :as tms]
             [propagators.message :refer [message message-id message-value]]
-            [propagators.network :as net]
-            [propagators.propagator :as prop]))
+            [propagators.network :as net]))
 
 (defn- unwrap-compiler-value
   [v]
@@ -62,34 +62,31 @@
 
 (defn- tms-closure-value
   [closure-id closure-value]
-  (with-meta
-    {:compiler-2/operator :tms-closure
-     :closure-id closure-id
-     :closure closure-value}
-    {h/application-activate-key
-     (fn [network _context-id arg-ids out-id]
-       (tms-closure-call-messages closure-id
-                                  closure-value
-                                  network
-                                  arg-ids
-                                  out-id))}))
+  (operator-value/operator-closure
+   {:name "tms-closure-value"
+    :activate (fn [network _context-id arg-ids out-id]
+                (tms-closure-call-messages closure-id
+                                           closure-value
+                                           network
+                                           arg-ids
+                                           out-id))}))
 
 (defn tms-closure-operator []
-  (with-meta
-    (fn [network _arg-ids out-id]
-      [network [] out-id])
-    {h/application-activate-key
-     (fn [network _context-id arg-ids out-id]
-       (let [[closure-id] (vec arg-ids)]
-         (when-not (and closure-id (= 1 (count arg-ids)))
-           (throw (ex-info "tms-closure expects one network closure"
-                           {:arg-ids arg-ids})))
-         (let [closure-value (h/strongest-or-nothing network closure-id)]
-           (if (or (value/unusable? closure-value)
-                   (not (closure-value/closure-info? closure-value)))
-             []
-             [(message out-id
-                       (tms-closure-value closure-id closure-value))]))))}))
+  (operator-value/operator-closure
+   {:name "tms-closure"
+    :install (fn [network _arg-ids out-id]
+               [network [] out-id])
+    :activate (fn [network _context-id arg-ids out-id]
+                (let [[closure-id] (vec arg-ids)]
+                  (when-not (and closure-id (= 1 (count arg-ids)))
+                    (throw (ex-info "tms-closure expects one network closure"
+                                    {:arg-ids arg-ids})))
+                  (let [closure-value (h/strongest-or-nothing network closure-id)]
+                    (if (or (value/unusable? closure-value)
+                            (not (closure-value/closure-info? closure-value)))
+                      []
+                      [(message out-id
+                                (tms-closure-value closure-id closure-value))]))))}))
 
 (defn- single-output-call-plan
   [closure-id closure-info arg-ids out-id tag]
@@ -184,45 +181,40 @@
 
 (defn- distributed-premise-closure-value
   [closure-id closure-value premise epoch]
-  (with-meta
-    {:compiler-2/operator :distributed-premise-closure
-     :closure-id closure-id
-     :closure closure-value
-     :premise premise
-     :epoch epoch}
-    {h/application-activate-key
-     (fn [network _context-id arg-ids out-id]
-       (distributed-premise-closure-call-messages closure-id
-                                                 closure-value
-                                                 premise
-                                                 epoch
-                                                 network
-                                                 arg-ids
-                                                 out-id))}))
+  (operator-value/operator-closure
+   {:name "distributed-premise-closure-value"
+    :activate (fn [network _context-id arg-ids out-id]
+                (distributed-premise-closure-call-messages closure-id
+                                                          closure-value
+                                                          premise
+                                                          epoch
+                                                          network
+                                                          arg-ids
+                                                          out-id))}))
 
 (defn distributed-premise-closure-operator []
-  (with-meta
-    (fn [network _arg-ids out-id]
-      [network [] out-id])
-    {h/application-activate-key
-     (fn [network _context-id arg-ids out-id]
-       (let [[closure-id premise-id epoch-id] (vec arg-ids)]
-         (when-not (and closure-id premise-id epoch-id (= 3 (count arg-ids)))
-           (throw (ex-info "distributed-premise-closure expects closure, premise, and epoch"
-                           {:arg-ids arg-ids})))
-         (let [closure-value (h/strongest-or-nothing network closure-id)
-               premise (h/strongest-or-nothing network premise-id)
-               epoch (h/strongest-or-nothing network epoch-id)]
-           (if (or (value/unusable? closure-value)
-                   (not (closure-value/closure-info? closure-value))
-                   (value/unusable? premise)
-                   (value/unusable? epoch))
-             []
-             [(message out-id
-                       (distributed-premise-closure-value closure-id
-                                                         closure-value
-                                                         premise
-                                                         epoch))]))))}))
+  (operator-value/operator-closure
+   {:name "distributed-premise-closure"
+    :install (fn [network _arg-ids out-id]
+               [network [] out-id])
+    :activate (fn [network _context-id arg-ids out-id]
+                (let [[closure-id premise-id epoch-id] (vec arg-ids)]
+                  (when-not (and closure-id premise-id epoch-id (= 3 (count arg-ids)))
+                    (throw (ex-info "distributed-premise-closure expects closure, premise, and epoch"
+                                    {:arg-ids arg-ids})))
+                  (let [closure-value (h/strongest-or-nothing network closure-id)
+                        premise (h/strongest-or-nothing network premise-id)
+                        epoch (h/strongest-or-nothing network epoch-id)]
+                    (if (or (value/unusable? closure-value)
+                            (not (closure-value/closure-info? closure-value))
+                            (value/unusable? premise)
+                            (value/unusable? epoch))
+                      []
+                      [(message out-id
+                                (distributed-premise-closure-value closure-id
+                                                                  closure-value
+                                                                  premise
+                                                                  epoch))]))))}))
 
 (defn- premise-input-messages
   [network value-id premise-id epoch-id out-id]
@@ -268,74 +260,64 @@
       [(message out-id (tms/distributed-premise-update premise epoch active?))])))
 
 (defn premise-input-operator []
-  (with-meta
-    (fn [network [value-id premise-id epoch-id out-id] _fallback-id]
-      (let [[prop-id network']
-            ((prop/construct-propagator
-              (fn [_inputs _outputs current-net]
-                (premise-input-messages current-net
-                                        value-id
-                                        premise-id
-                                        epoch-id
-                                        out-id))
-              [value-id premise-id epoch-id]
-              [out-id])
-             network)]
-        [network' [prop-id] out-id]))
-    {h/output-selector-key
-     (fn [[_value-id _premise-id _epoch-id out-id] fallback-id]
-       (or out-id fallback-id))
-     h/application-activate-key
-     (fn [network _context-id [value-id premise-id epoch-id out-id] _fallback-id]
-       (premise-input-messages network value-id premise-id epoch-id out-id))}))
+  (operator-value/propagator-operator
+   {:name "premise-input"
+    :output-selector (fn [[_value-id _premise-id _epoch-id out-id] fallback-id]
+                       [(or out-id fallback-id)])
+    :input-selector (fn [arg-ids fallback-id _context-id]
+                      (let [[value-id premise-id epoch-id explicit-out-id] (vec arg-ids)
+                            out-id (or explicit-out-id fallback-id)]
+                        (when-not (and value-id premise-id epoch-id out-id
+                                       (<= 3 (count arg-ids) 4))
+                          (throw (ex-info "premise-input expects value, premise, epoch, and optional output"
+                                          {:arg-ids arg-ids})))
+                        [value-id premise-id epoch-id]))
+    :activate (fn [network inputs outputs _context-id]
+                (let [[value-id premise-id epoch-id] inputs
+                      [out-id] outputs]
+                  (premise-input-messages network
+                                          value-id
+                                          premise-id
+                                          epoch-id
+                                          out-id)))}))
 
 (defn premise-content-input-operator []
-  (with-meta
-    (fn [network [value-id premise-id epoch-id out-id] _fallback-id]
-      (let [[prop-id network']
-            ((prop/construct-propagator
-              (fn [_inputs _outputs current-net]
-                (premise-content-input-messages current-net
-                                                value-id
-                                                premise-id
-                                                epoch-id
-                                                out-id))
-              [value-id premise-id epoch-id]
-              [out-id])
-             network)]
-        [network' [prop-id] out-id]))
-    {h/output-selector-key
-     (fn [[_value-id _premise-id _epoch-id out-id] fallback-id]
-       (or out-id fallback-id))
-     h/application-activate-key
-     (fn [network _context-id [value-id premise-id epoch-id out-id] _fallback-id]
-       (premise-content-input-messages network value-id premise-id epoch-id out-id))}))
+  (operator-value/propagator-operator
+   {:name "premise-content-input"
+    :output-selector (fn [[_value-id _premise-id _epoch-id out-id] fallback-id]
+                       [(or out-id fallback-id)])
+    :input-selector (fn [arg-ids fallback-id _context-id]
+                      (let [[value-id premise-id epoch-id explicit-out-id] (vec arg-ids)
+                            out-id (or explicit-out-id fallback-id)]
+                        (when-not (and value-id premise-id epoch-id out-id
+                                       (<= 3 (count arg-ids) 4))
+                          (throw (ex-info "premise-content-input expects value, premise, epoch, and optional output"
+                                          {:arg-ids arg-ids})))
+                        [value-id premise-id epoch-id]))
+    :activate (fn [network inputs outputs _context-id]
+                (let [[value-id premise-id epoch-id] inputs
+                      [out-id] outputs]
+                  (premise-content-input-messages network
+                                                  value-id
+                                                  premise-id
+                                                  epoch-id
+                                                  out-id)))}))
 
 (defn premise-state-operator [active? name]
-  (with-meta
-    (fn [network [premise-id epoch-id out-id] _fallback-id]
-      (let [[prop-id network']
-            ((prop/construct-propagator
-              (fn [_inputs _outputs current-net]
-                (premise-state-messages active?
-                                        current-net
-                                        premise-id
-                                        epoch-id
-                                        out-id))
-              [premise-id epoch-id]
-              [out-id])
-             network)]
-        [network' [prop-id] out-id]))
-    {h/output-selector-key
-     (fn [[_premise-id _epoch-id out-id] fallback-id]
-       (or out-id fallback-id))
-     h/application-activate-key
-     (fn [network _context-id [_premise-id _epoch-id out-id :as arg-ids] _fallback-id]
-       (when-not out-id
-         (throw (ex-info (str name " expects premise, epoch, and output cell")
-                         {:arg-ids arg-ids})))
-       (let [[premise-id epoch-id _out-id] arg-ids]
-         (premise-state-messages active? network premise-id epoch-id out-id)))}))
+  (operator-value/propagator-operator
+   {:name name
+    :output-selector (fn [[_premise-id _epoch-id out-id] fallback-id]
+                       [(or out-id fallback-id)])
+    :input-selector (fn [arg-ids _fallback-id _context-id]
+                      (let [[premise-id epoch-id out-id] (vec arg-ids)]
+                        (when-not (and premise-id epoch-id out-id (= 3 (count arg-ids)))
+                          (throw (ex-info (str name " expects premise, epoch, and output cell")
+                                          {:arg-ids arg-ids})))
+                        [premise-id epoch-id]))
+    :activate (fn [network inputs outputs _context-id]
+                (let [[premise-id epoch-id] inputs
+                      [out-id] outputs]
+                  (premise-state-messages active? network premise-id epoch-id out-id)))}))
 
 (defn bind-distributed-tms-operators
   [compiler-env]

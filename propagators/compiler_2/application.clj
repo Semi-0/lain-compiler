@@ -14,6 +14,7 @@
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.operator-value :as operator-value]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.helpers.task-queue :as tq]
@@ -302,6 +303,13 @@
 
       (value/unusable? operator)
       []
+
+      (operator-value/operator-closure? operator)
+      (primitive-application-messages operator
+                                      context-id
+                                      scheduled-arg-ids
+                                      out-id
+                                      network)
 
       (h/application-activate operator)
       (primitive-application-messages operator

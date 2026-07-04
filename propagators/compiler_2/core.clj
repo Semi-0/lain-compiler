@@ -11,6 +11,7 @@
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.operator-value :as operator-value]
             [propagators.compiler-2.parser :as parser]
             [propagators.compiler-common.core :as common]
             [propagators.datastructures.compound-object :as obj]
@@ -45,6 +46,7 @@
 (defmulti g:apply
   (fn [operator-binding _operand-forms _calling-env _state _out-id]
     (cond
+      (operator-value/operator-closure? operator-binding) :primitive
       (fn? operator-binding) :primitive
       (env/binding-id operator-binding) :cell
       :else :unsupported)))
