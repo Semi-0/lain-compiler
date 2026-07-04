@@ -1,99 +1,77 @@
-First compiler-2 prototype scope:
+# Compiler-2 Syntax Design
 
-- first slice: ordinary application, `let-cell`, `def-net`, `network`, `cell`,
-  existing `::`, and existing `switch`.
-- sugar after that: Clojure-like `let`, `def-cell`, and topology-lazy `when`.
-- later: recursion syntax, compound data syntax, reflection, the
-  remaining closure/predicate behavior history APIs, IO, networking, and macros.
-- key reflective target: `compile` / `evaluate` should compile expressions into
-  an isolated sub-env, so experiments can extend language behavior without
-  mutating the core env.
+Current checkpoint: 2026-07-04.
 
-Current checkpoint, 2026-07-04:
+Compiler-2 is a propagator-language prototype. The syntax should expose ordinary
+propagator topology, closure/network values, behavior/TMS composition, and
+runtime IO while keeping reflective/compiler experiments behind explicit env
+boundaries.
 
-- Implemented compiler-2 surface:
-  - ordinary application, `let-cell`, `def`, `def-net`, `network`, `cell`, and
-    declared-output closure application;
-  - `def-cell` free-cell declarations, `def-cells`, and `def-cell` expression
-    binding for cell-producing expressions;
-  - Clojure-like `let` as syntax over scoped cells plus ordinary `->` binding;
-  - `def-constraint` as a direct topology installer: each declared argument is
-    both an input and output cell for the compound propagator body;
-  - compound pair access through `cons`, `car`, and `cdr`;
-  - generic compound slot access through `p:slot`, usable in ordinary
-    expressions and inside compiler-2 network closures;
-  - value-level conditionals `if`, `branch`, and `cond`, backed by ordinary
-    switch/sync behavior rather than topology creation;
-  - projection predicates `contradiction?`, `value?`, `symbol?`, `string?`,
-    `number?`, `boolean?`, `cell?`, `network?`, `closure?`, `behavior?`, and
-    `tms?`; `nothing?` is present but intentionally does not turn absence into a
-    durable boolean fact;
-  - a behavior/TMS default entry through
-    `propagators.compiler-2.main/compile-source-with-behavior-tms`.
-- Implemented behavior/TMS surface:
-  - distributed TMS is the default compiler-2 path; centralized reducer-cell TMS
-    remains legacy compatibility;
-  - `premise-believe`, `premise-retract`, `premise-content-input`,
-    `tms-closure`, and `premise-closure` all operate through distributed
-    premise facts carried by ordinary cells;
-  - `behavior-cell` builds a behavior cell from compiler-2 code:
-    `(behavior-cell events init merge out)`, where `merge` is a compiler-2
-    network closure with reducer protocol inputs `[acc next]` and one output;
-  - behavior merge closures reuse the generic compiler-2 reducer adapter, so the
-    user-facing merge shape is the same as reducer-subnet: `acc`, `next`, `out`.
-  - seven behavior syntax operators are compiler-2-backed now:
-    `behavior`, `latest`, `last`, `history`, `history-take`, `history-drop`,
-    and `history-split-at`. `latest` and `last` return behavior values, so they
-    remain composable with behavior arithmetic.
-- Module organization:
-  - compiler-facing behavior and distributed TMS operators live in
-    `propagators.compiler-2.behavior` and `propagators.compiler-2.tms`;
-  - compatibility facades remain for older callers;
-  - behavior storage/arithmetic and TMS core/distributed/legacy namespaces are
-    split under `propagators.datastructures`.
-- Syntax status:
-  - the working behavior syntax is still reducer-level, for example:
-    ```clojure
-    (def-net retain-latest [acc next] [out]
-      (let-cell [full]
-        (behavior-add-event acc next full)
-        (behavior-retain-last full 1 out)))
-    (behavior-cell events (behavior-empty-state) retain-latest retained)
-    ```
-  - the closure/predicate history operators below remain design targets:
-    `history-reduce`, `history-map`, `history-filter`, `history-take-while`,
-    `history-drop-while`, `history-split-with`, and `history-split-by`;
-  - fully pure low-level slot reducers should eventually reuse the
-    accessor-preserving accumulating GUR/sub-env route. The current compiler-2
-    behavior path proves `p:slot` access and simple slot writes in closures, but
-    it does not yet make dynamic nested slot topology as general as accumulating
-    GUR.
-- Robustness evidence from this checkpoint:
-  - nested compiler-2 behavior closures can build a retained behavior and feed it
-    through another compiled network call;
-  - the same compiled behavior can be wrapped by distributed TMS, chained through
-    another compiled network call, retracted to `nothing`, and brought back by a
-    higher-epoch premise fact;
-  - `switch` and forward sync are covered in the behavior/TMS default env;
-  - immediate syntax-design coverage is now roughly 13-16 items beyond the
-    original first slice, depending on whether predicate aliases are counted
-    individually or as one family;
-  - topology-lazy `when` is not switch sugar. It belongs to the accumulating
-    GUR lowering path because it builds/declarations topology only after the
-    guard is present;
-  - recursive syntax is not implemented. A self-recursive `def-net` currently
-    compiles into a silent non-productive network whose result is `nothing`,
-    instead of raising an explicit unsupported-recursion error.
+## Implementation Summary
 
-0. Application 
+Implemented compiler-2 surface:
 
-0.1 Network Application
+- ordinary application, `let-cell`, `let`, `def`, `def-cell`, `def-cells`,
+  `def-net`, `def-constraint`, `network`, `cell`, and `::`;
+- declared-output closure application;
+- pair access through `cons`, `car`, and `cdr`;
+- generic compound slot access through `p:slot`;
+- value-level conditionals: `switch`, `if`, `branch`, and `cond`;
+- arithmetic, `->`, and `<->`;
+- behavior/TMS default entry through
+  `propagators.compiler-2.main/compile-source-with-behavior-tms`;
+- runtime/TUI/XR operators through the compiler-2 runtime env.
+
+Implemented behavior/TMS surface:
+
+- distributed TMS is the default compiler-2 path; centralized reducer-cell TMS
+  remains legacy compatibility;
+- `premise-believe`, `premise-retract`, `premise-content-input`,
+  `tms-closure`, and `premise-closure` operate through distributed premise
+  facts carried by ordinary cells;
+- `behavior-cell` builds a behavior from compiler-2 code using reducer protocol
+  inputs `[acc next]` and one output;
+- behavior merge closures reuse the compiler-2 reducer adapter;
+- `behavior`, `latest`, `last`, `history`, `history-take`, `history-drop`, and
+  `history-split-at` are compiler-2-backed. `latest` and `last` return behavior
+  values and remain composable with behavior arithmetic.
+
+Still design/prototype work:
+
+- topology-lazy `when` should lower to accumulating GUR. It is not switch sugar;
+- recursion syntax, recursive `for`, and structural `reduce` need GUR/compiler
+  integration;
+- `history-reduce`, `history-map`, `history-filter`, predicate-based history
+  operators, generic/layered extension syntax, reflection, search, networking,
+  and macros remain design targets.
+
+## Application
+
+### Primitive And Operator Application
+
+```clojure
 (p:<propagator> <cell> ...)
+(+ 1 2)
+(-> value out)
+(<-> a b)
+```
 
-0.2 Cell Based Application
-(<closure> <cell> <cell> ...) -> <cell>
+Current implementation:
 
-Declared-output closures consume explicit output cells as the tail applicants:
+- ordinary list application is the default application syntax;
+- primitive/operator applications compile to retained compiler-2 application
+  data plus application propagators;
+- `->` is one-way sync, and `<->` is bidirectional sync;
+- `@` and `@once` remain reserved until they have semantics distinct from
+  ordinary application.
+
+### Network Closure Application
+
+```clojure
+((cell [x]
+   (+ x 1))
+ 4)
+```
 
 ```clojure
 (let-cell [same next]
@@ -104,292 +82,515 @@ Declared-output closures consume explicit output cells as the tail applicants:
   next)
 ```
 
-The network call builds relationships among supplied cells. It does not create
-a hidden result object. To return a cell from the surrounding expression, return
-that cell explicitly, as `next` above.
+Current implementation:
 
-apply
-(@ <closure> [args]) 
-(@once <closure-cell> [args])
+- zero-output closures created with `cell` or `::` return the body result cell;
+- declared-output closures consume explicit output cells as tail applicants;
+- declared-output network calls do not create hidden result objects;
+- callers return/read the desired output cell explicitly.
 
-Prototype: ordinary list application is enough first. Keep `@` and `@once`
-until they have semantics different from normal application.
+## Local Cells And Bindings
 
-1. let
-
-(def <cell-name>)
-(def <cell-name> <expr>/<cell>)
-
-(let-cell [<cell>] <body>)
-
-;; clojure like expr
-(let [<cell> <expr>/<cell>] <body>)
-
-Implemented: `let` is sugar over scoped cells and ordinary `->` binding.
-
-2. network declaration
-
-;; net-name is also the cell that owns the definition closure
-(def-net <net-name> 
-  [<input-cells> ...]
-  [<output-cells> ...]
-  <body>
-)
-
-Prototype: implement this first as named closure data. The name cell owns the
-definition closure.
-
-(both def-net and def cell supports native tail recursion)
-
-Later: tail recursion is not part of the first syntax slice.
-
-(def-constraint <net-name>
- [<constraint-cells>]
-  <body>
-)
-
-Implemented: `def-constraint` binds a direct compiler-2 installer. Applying a
-constraint uses each applicant as both an input and an output; it does not use
-the declared-output closure protocol and does not require doubled applicants.
+### `def`
 
 ```clojure
-(def-constraint same [a b]
-  (<-> a b))
-(same x y)
+(def signal)
+(def answer (+ 1 2))
 ```
 
-(def-cell <cell-name>)
+Current implementation:
 
-Declare a named free cell, equivalent in binding behavior to `(def <cell-name>)`
-with no value. This is the ergonomic form for creating a named unbounded cell:
+- `(def name)` creates a named free cell;
+- `(def name expr)` binds `name` directly to the result cell of `expr`;
+- a later `def` with the same name creates a fresh binding rather than mutating
+  an old name cell.
+
+### `def-cell`
 
 ```clojure
 (def-cell out)
 (-> (+ 1 2) out)
 ```
 
-For several free cells, use `def-cells`:
+```clojure
+(def-cell inc
+  (cell [x]
+    (+ x 1)))
+```
+
+```clojure
+(def-cell inc [x]
+  (+ x 1))
+```
+
+Current implementation:
+
+- `(def-cell name)` is a free-cell declaration, equivalent in binding behavior
+  to `(def name)`;
+- `(def-cell name (cell ...))` binds `name` to a cell-producing expression;
+- the older `(def-cell name [args] body)` form remains as shorthand for a
+  zero-output cell closure.
+
+### `def-cells`
 
 ```clojure
 (def-cells a b c out)
 ```
 
-This is shorthand for:
+Current implementation:
+
+- shorthand for repeated free-cell declarations;
+- equivalent to `(def-cell a)`, `(def-cell b)`, etc.
+
+### `let-cell`
 
 ```clojure
-(def-cell a)
-(def-cell b)
-(def-cell c)
-(def-cell out)
+(let-cell [x y out]
+  (-> 1 x)
+  (-> (+ x 2) y)
+  (<-> y out)
+  out)
 ```
 
-`def-cell` with an expression binds the name to a cell-producing expression:
+Current implementation:
+
+- creates scoped named cells;
+- body compiles in a child lexical compiler env;
+- useful when the code should declare cells first and wire topology manually.
+
+### `let`
 
 ```clojure
-(def-cell <cell-name>
-  (cell [<input-cells> ...]
-    <body>))
+(let [x 1
+      y (+ x 2)]
+  (+ y 3))
 ```
 
-Here the second form is intentionally not a free-cell declaration. The
-`cell-expr` is a cell closure/value, such as `(cell [input-cells] <body>)`,
-that returns a cell when applied.
+Current implementation:
 
-annoymous network
-(net [<input-cells> ...] [<output-cells> ...]
-  <body>
-)
+- sugar over scoped cells and ordinary `->` binding;
+- each binding creates a local cell and syncs the expression result into it;
+- the final body expression is the returned result.
 
-Prototype: support this with the same closure representation as `def-net`.
-Declared outputs must be supplied explicitly at application sites.
+## Network Declaration
 
-(body can be a one time network since we can use network as a value)
-(cell [input-cells] <body>) 
-or (:: [<input-cells>] <body>)
+### `def-net`
 
-`cell` / `::` are zero-output closure forms. Applying them returns the body
-result cell.
+```clojure
+(def-net inc [x] [out]
+  (<-> (+ x 1) out))
 
-3. conditional network 
+(let-cell [out]
+  (inc 4 out)
+  out)
+```
 
-(when <condition-cell> <body-network>)
+Current implementation:
 
-(switch <condition-cell> <input> <output>)
+- defines a named closure value;
+- the name cell owns the definition closure;
+- declared outputs must be supplied explicitly at application sites;
+- native tail recursion is not part of the implemented surface yet.
 
-Prototype: keep `switch` first because it already exists as an operator.
-Add `when` only after it lowers to existing lazy topology. This is distinct
-from value-level `switch`: `when` is a GUR topology builder, not a value
-predicate.
+### Anonymous Network
 
-(if <condition-cell> <then-cell> <else-cell>)
+```clojure
+(network [x] [out]
+  (<-> (+ x 1) out))
+```
 
-(branch <condition-cell> <then-in> <then-out> <else-in> <else-out>)
+```clojure
+(net [x] [out]
+  (<-> (+ x 1) out))
+```
 
-(cond [<condition-a> <body-a>
-       <condition-b> <body-b>
-       <else> <out-else>])
+Current implementation:
 
-Implemented: `if`, `branch`, and `cond` are value-level conditionals. They route
-values through existing switch/sync behavior and do not lazily build topology.
+- `network` is implemented as declared-output closure data;
+- `net` remains the intended spelling in the design notes but is not the active
+  parser head today;
+- declared outputs must be supplied by callers.
 
-4. recursion
+### Cell Closure
 
-tail recursion is defaultly supported
+```clojure
+(cell [x]
+  (+ x 1))
+```
 
-if we successfully implemented behavior based iteration,
-we can define cheap iteration like
+```clojure
+(:: [x]
+  (+ x 1))
+```
 
-(for <cell in range>
-  <body-network>
-)
+Current implementation:
 
-(reduce <reducer-cell> <accumulator> <initial> <body>)
+- `cell` and `::` are zero-output closure forms;
+- applying them returns the body result cell.
 
-5. compound data
-(cons <cell> <cell>)
-(car <collection> <cell>)
-(cdr <collection> <cell>)
+### `def-constraint`
 
-other data structure is to be supported
+```clojure
+(def-constraint same [a b]
+  (<-> a b))
 
-6. predicates
-nothing?
-contradiction?
-value?
+(same x y)
+```
 
-symbol?
-string?
-number?
-boolean?
+```clojure
+(def-constraint add-bias [x out]
+  (<-> (+ x bias) out))
+```
 
-tms?
-behavior?
-network?
-closure?
-cell?
-propagator-rep?
-graph?
+Current implementation:
 
-Implemented predicate surface: `contradiction?`, `value?`, `symbol?`,
-`string?`, `number?`, `boolean?`, `cell?`, `network?`, `closure?`,
-`behavior?`, and `tms?`. `nothing?` is bound, but it waits on absent information
-instead of asserting a boolean from lack of evidence.
+- binds a direct compiler-2 installer, not a normal declared-output closure;
+- applying a constraint uses each applicant as both input and output;
+- no doubled applicants are required;
+- lexical capture works through the compiler env where the constraint was
+  declared;
+- this exposes compound/bidirectional topology, not a separate constraint
+  solver.
 
-7. built-in functions
-basic arithmetic (+ - * /)
+## Conditionals
 
-sync ->
-bi-sync <->
+### `switch`
 
-Self Reflectivity:
-(neighbors <cell/closure/propagator-rep> <out>)
-(content <cell> <out>)
-(name <cell/propagator> <out>)
-(compile <expr-string> <env>)
-(evaluate <expr> <env>)
-(execute-sub-env <parent-env> <expr> <out>)
-(virtual-sub-env <parent-env> <expr> <out>)
+```clojure
+(switch value condition out)
+(def gated (switch value condition))
+```
 
-Power: these are not just introspection helpers. They should create and run
-compiler-2 expressions inside a sub-env isolated from the core env. The passed
-env is the extension boundary: user/compiler experiments can add syntax,
-operators, or bindings there without changing the trusted base environment.
+Current implementation:
 
-Implemented today: `execute-sub-env` is the current runtime primitive. It reads
-a parent compiler env and an expression, creates a child env with
-`env/extend-env`, compiles the expression against that child env, runs the newly
-declared props once, and projects the result to `out`.
+- value-level gate;
+- if `condition` is true, forwards `value` to `out`;
+- if `condition` is false or absent, no topology is lazily created;
+- preserves behavior/TMS content through the current sync path.
 
-Safety boundary of current `execute-sub-env`:
+### `if`
 
-- child bindings are isolated in the child frame;
-- the parent env object is not extended in place;
+```clojure
+(if condition then-value else-value)
+```
+
+Current implementation:
+
+- value-level conditional operator;
+- chooses then/else value based on the strongest condition;
+- does not lazily build branch topology.
+
+### `branch`
+
+```clojure
+(branch condition then-in then-out else-in else-out)
+```
+
+Current implementation:
+
+- explicit-output value branch;
+- forwards `then-in` to `then-out` when true;
+- forwards `else-in` to `else-out` when false.
+
+### `cond`
+
+```clojure
+(cond [condition-a body-a
+       condition-b body-b
+       else body-else])
+```
+
+Current implementation:
+
+- parser sugar that lowers to nested value-level `if`;
+- `else` must be the final clause.
+
+### Topology-Lazy `when`
+
+```clojure
+(when condition
+  <body-network>)
+```
+
+Current implementation:
+
+- not implemented as compiler-2 surface syntax;
+- design target is accumulating GUR lazy topology;
+- distinct from `switch`: `when` is a topology builder, not a value predicate.
+
+## Recursion And Iteration
+
+```clojure
+(for cell in range
+  <body-network>)
+```
+
+```clojure
+(reduce reducer-cell accumulator initial
+  <body>)
+```
+
+Current implementation:
+
+- user-facing recursive syntax is not implemented;
+- accumulating GUR is the intended substrate for recursive topology, recursive
+  AST/list traversal, macro-like expansion, and topology-lazy `when`;
+- a self-recursive `def-net` currently does not provide productive recursion.
+
+## Compound Data
+
+### Pair Access
+
+```clojure
+(cons head tail)
+(car pair)
+(cdr pair)
+```
+
+```clojure
+(let-cell [pair]
+  (def pair (cons 1 2))
+  (+ (car pair) (cdr pair)))
+```
+
+Current implementation:
+
+- `cons`, `car`, and `cdr` are available in compiler-2;
+- `p:cons`, `p:car`, and `p:cdr` expose the lower-level explicit-output
+  operators;
+- updates are topology/accessor based, not host-map materialization.
+
+### Generic Slot Access
+
+```clojure
+(p:slot :x value object)
+(p:slot :x object)
+```
+
+Current implementation:
+
+- `p:slot` works in ordinary expressions and inside compiler-2 network
+  closures;
+- explicit-output slot writes and expression-style slot reads are supported;
+- fully dynamic nested slot topology remains a GUR/sub-env design target.
+
+## Predicates
+
+```clojure
+(nothing? x)
+(contradiction? x)
+(value? x)
+```
+
+```clojure
+(symbol? x)
+(string? x)
+(number? x)
+(boolean? x)
+```
+
+```clojure
+(tms? x)
+(behavior? x)
+(network? x)
+(closure? x)
+(cell? x)
+```
+
+Current implementation:
+
+- `contradiction?`, `value?`, `symbol?`, `string?`, `number?`, `boolean?`,
+  `cell?`, `network?`, `closure?`, `behavior?`, and `tms?` are implemented;
+- `nothing?` is bound but intentionally waits on absent information instead of
+  asserting a durable boolean from lack of evidence;
+- `propagator-rep?` and `graph?` remain design targets.
+
+## Built-In Functions
+
+```clojure
+(+ a b)
+(- a b)
+(* a b)
+(/ a b)
+```
+
+```clojure
+(-> value out)
+(<-> a b)
+```
+
+Current implementation:
+
+- arithmetic is available in default compiler-2 env;
+- the behavior/TMS env replaces arithmetic with behavior/TMS-aware wrappers;
+- `->` performs one-way sync;
+- `<->` performs bidirectional sync.
+
+## Self Reflectivity
+
+```clojure
+(neighbors cell-or-closure-or-propagator out)
+(content cell out)
+(name cell-or-propagator out)
+```
+
+```clojure
+(compile expr-string env)
+(evaluate expr env)
+(execute-sub-env parent-env expr out)
+(virtual-sub-env parent-env expr out)
+```
+
+```clojure
+(env-snap out)
+```
+
+Current implementation:
+
+- `execute-sub-env` is implemented as the pragmatic trusted primitive;
+- it reads a parent compiler env and an expression, creates a child env with
+  `env/extend-env`, compiles against the child env, runs newly declared props
+  once, and projects the result to `out`;
+- child bindings are isolated in the child frame, and the parent env object is
+  not extended in place;
 - parent lexical cells remain ordinary reachable cells. If child code resolves a
   parent binding and installs topology that writes to it, that parent cell can
-  still receive messages.
+  still receive messages;
+- `virtual-sub-env` is the design target for safe reflective code: parent
+  bindings should enter through read avatars/projected values, and writes should
+  leave only through declared outputs/effects;
+- `env-snap` is intentionally marked dangerous and remains a design note.
 
-Design target: `virtual-sub-env` is the safe self-reflective variant. It should
-construct the child env as a compound object and compile user/compiler code
-inside it, but parent lexical bindings should enter through read avatars or
-projected values. Writes should leave the virtual env only through declared
-outputs/effects. This makes it possible to experiment with compiler extensions,
-behavior handlers, custom merge/strongest projections, and reflective
-evaluation without letting sub-env code directly mutate parent-env cells.
+## TMS
 
-For a safe reflective system:
+```clojure
+(premise-believe premise epoch out)
+(premise-retract premise epoch out)
+(premise-content-input value premise epoch out)
+```
 
-- `execute-sub-env` remains the pragmatic trusted primitive;
-- `virtual-sub-env` becomes the capability boundary for untrusted or
-  experimental compiler code;
-- parent env extension is data: new syntax/operators/handlers are ordinary env
-  bindings in the virtual env;
-- outward communication is explicit projection, not implicit writes to parent
-  lexical cells.
+```clojure
+(tms-closure closure premise epoch)
+(premise-closure closure premise epoch)
+```
 
-;; dangerous!!
-(env-snap <out>)
+Design notes also mention:
 
+```clojure
+(assert condition premises)
+(negate condition premises)
+```
 
-TMS:
-(assert <condition-cell> <premises-cell>)
-(negate <condition-cell> <premises-cell>)
+Current implementation:
 
-Reactivity:
-(behavior <behavior-cell> <initial> <body>)
-(latest <behavior>)
-(last <behavior-cell> <index> <out>)
-(history <behavior-cell> <start> <end> <out>)
-(history-reduce <behavior-cell> <reducer-cell> <accumulator> <initial> <out>)
-(history-map <behavior-cell> <mapper-cell> <out>)
-(history-filter <behavior-cell> <filter-cell> <out>)
-(history-take <behavior-cell> <count> <out>)
-(history-drop <behavior-cell> <count> <out>)
-(history-take-while <behavior-cell> <predicate-cell> <out>)
-(history-drop-while <behavior-cell> <predicate-cell> <out>)
-(history-split-with <behavior-cell> <predicate-cell> <out>)
-(history-split-at <behavior-cell> <index> <out>)
-(history-split-by <behavior-cell> <predicate-cell> <out>)
+- distributed TMS is the compiler-2 default;
+- premise facts are carried by ordinary cells;
+- central reducer-cell TMS remains legacy compatibility;
+- `assert` and `negate` are still design-level names, not the active surface.
 
-Extend:
-(make-generic-propagator <generic-closure-cell>)
-(define-generic-propagator-handler <generic-closure> <arg-matcher> <handler-closure>)
-;; layered dataum can both be a list or a closure 
-(make-layered-datum <store> <a-list>)
+## Behavior And Reactivity
 
-Search:
-(binary-amb <range> <out>)
-(amb <range> <out>)
+### Behavior Construction
 
-;; more primitive can be extended with primitive propagator package at runtime
+```clojure
+(def-net retain-latest [acc next] [out]
+  (let-cell [full]
+    (behavior-add-event acc next full)
+    (behavior-retain-last full 1 out)))
 
-8. interaction
-(value-io <cell> <out>)  ;; value io can be the default one for TUI/CLIs
+(behavior-cell events (behavior-empty-state) retain-latest retained)
+```
 
-(plot <cell> <out>)
-(graph <graph> <out>)
-(network-io <graph> <out>)
-(slider-io <widget-id> <view-cell> <event-source-cell> <out>)
-(slider-panel-io <panel-id>
-  <channel-name> <view-cell> <event-source-cell>
-  ...
-  <out>)
-(button-io <cell> <out>)
+```clojure
+(behavior events retain-latest (behavior-empty-state) retained)
+```
 
-Implemented TUI/runtime expression surface:
+Current implementation:
 
-- Ordinary non-declaration TUI blocks are expression blocks. The runtime wraps
+- behavior cells can be constructed from compiler-2-defined reducer closures;
+- reducer closures use the normal `[acc next] -> out` protocol;
+- behavior merge closures reuse the compiler-2 reducer adapter and generic
+  reducer-subnet machinery.
+
+### Behavior History
+
+```clojure
+(latest behavior)
+(last behavior index out)
+(history behavior start end out)
+(history-take behavior count out)
+(history-drop behavior count out)
+(history-split-at behavior index out)
+```
+
+Design targets:
+
+```clojure
+(history-reduce behavior reducer accumulator initial out)
+(history-map behavior mapper out)
+(history-filter behavior predicate out)
+(history-take-while behavior predicate out)
+(history-drop-while behavior predicate out)
+(history-split-with behavior predicate out)
+(history-split-by behavior predicate out)
+```
+
+Current implementation:
+
+- `latest`, `last`, `history`, `history-take`, `history-drop`, and
+  `history-split-at` are implemented;
+- `latest` and `last` return behavior values, so they compose with behavior
+  arithmetic;
+- closure/predicate history operators remain design targets.
+
+## Extension Surface
+
+```clojure
+(make-generic-propagator generic-closure-cell)
+(define-generic-propagator-handler generic-closure arg-matcher handler-closure)
+(make-layered-datum store a-list)
+```
+
+Current implementation:
+
+- these are design targets for user/compiler extension syntax;
+- the current recommended extension path is env-bound compiler-2 operators and
+  behavior/TMS env composition;
+- layered datum surface syntax is not implemented here.
+
+## Search
+
+```clojure
+(binary-amb range out)
+(amb range out)
+```
+
+Current implementation:
+
+- search syntax remains a design target.
+
+## TUI And Interaction IO
+
+### TUI Block Output
+
+```clojure
+(block-at (instance taro) 2 out)
+(be:block-at (instance taro) 2 out)
+```
+
+Current implementation:
+
+- ordinary non-declaration TUI blocks are expression blocks. The runtime wraps
   them with a generated output cell and `(block-at % <next-index> out)`, so the
-  result is displayed in the next block.
-- Top-level declarations and IO forms are not auto-wrapped: `def`, `def-cell`,
+  result displays in the next block;
+- top-level declarations and IO forms are not auto-wrapped: `def`, `def-cell`,
   `def-cells`, `def-net`, `def-constraint`, `->`, `<->`, `block-at`,
-  `be:block-at`, `trace`, `xr-io`, `slider-io`, and `slider-panel-io`.
-- `(block-at (instance <name>) <index> <value>)` writes the value to another TUI
-  block through the normal monotone block text path.
-- `(be:block-at (instance <name>) <index> <value>)` writes display output
-  through a latest-behavior display lane. Use this for repeated behavior/XR
-  updates where the block should show the newest projected value.
+  `be:block-at`, `trace`, `xr-io`, `slider-io`, and `slider-panel-io`;
+- `block-at` writes through the normal monotone block text path;
+- `be:block-at` writes through a latest-behavior display lane and is intended
+  for repeated behavior/XR updates.
 
-Examples:
+Example:
 
 ```clojure
 (def-cell out)
@@ -401,17 +602,45 @@ Examples:
 (be:block-at (instance taro) 2 out)
 ```
 
-Implemented XR graph/projection surface:
+### XR Trace And Projection
 
-- `(trace <cell> <graph-out>)` builds a semantic graph trace from a cell.
-- `(xr-io <graph> <receipt>)` emits a boundary effect that starts or refreshes
-  the XR/browser projection. The browser receives graph/widget projections; it
-  does not directly mutate arbitrary cells.
-- Widget IO forms register browser/XR controls. Browser events are keyed by
-  widget id and channel; the runtime resolves the registered event source cell
-  and injects a monotone behavior event.
+```clojure
+(trace out graph)
+(xr-io graph receipt)
+```
 
-Slider examples:
+Current implementation:
+
+- `trace` builds a semantic graph trace from a cell;
+- `xr-io` emits a boundary effect that starts or refreshes the XR/browser
+  projection;
+- the browser receives graph/widget projections and does not directly mutate
+  arbitrary cells.
+
+Example:
+
+```clojure
+(let-cell [g receipt]
+  (trace out g)
+  (xr-io g receipt)
+  receipt)
+```
+
+### Slider Widget IO
+
+```clojure
+(slider-io widget-id view-cell event-source-cell out)
+```
+
+Current implementation:
+
+- registers one browser/XR slider with channel `"value"`;
+- `view-cell` is projected back to the widget as display/feedback;
+- browser events are keyed by widget id and channel;
+- runtime resolves the registered event source cell and injects monotone
+  behavior events.
+
+Example:
 
 ```clojure
 (def-cell gain-events)
@@ -425,8 +654,26 @@ Slider examples:
 (slider-io "gain" gain gain-events widget)
 ```
 
+### Slider Panel IO
+
 ```clojure
-(def-cells a-events b-events c-events a b c widget)
+(slider-panel-io panel-id
+  channel-a view-a events-a
+  channel-b view-b events-b
+  out)
+```
+
+Current implementation:
+
+- registers one browser/XR widget panel with multiple slider channels;
+- each channel maps to its own view cell and event source cell;
+- browser/XR interaction uses the same runtime widget-event path for every
+  channel.
+
+Example:
+
+```clojure
+(def-cells a-events b-events c-events a b c out widget)
 
 (def-net retain-event [acc update] [out]
   (behavior-add-event acc update out))
@@ -444,11 +691,35 @@ Slider examples:
 (<-> (- (+ a b) c) out)
 ```
 
-9. networking
-(share-io <collection-cell> <p2p-instance>)
+## Networking
 
-10. macro extension
-(defmacro <macro-name> <args> <body>)
+```clojure
+(share-io collection-cell p2p-instance)
+```
 
-11. projection
-(xr-io <graph-io> <receipt>)
+Current implementation:
+
+- networking syntax remains a design target.
+
+## Macro Extension
+
+```clojure
+(defmacro macro-name args body)
+```
+
+Current implementation:
+
+- macro syntax remains a design target;
+- accumulating GUR is the intended substrate for macro-like declaration
+  expansion.
+
+## Projection
+
+```clojure
+(xr-io graph-io receipt)
+```
+
+Current implementation:
+
+- `xr-io` is implemented in the compiler-2 runtime env;
+- it is a boundary-effect output path, not a browser mutation primitive.
