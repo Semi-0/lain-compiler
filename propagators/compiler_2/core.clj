@@ -175,6 +175,42 @@
          (h/add-props [env-slot-prop]))
      (env/compound-binding closure-id)]))
 
+(defn- existing-cell-binding
+  [state name]
+  (let [binding (env/lookup (:env state) name)]
+    (when (env/cell-binding? binding)
+      binding)))
+
+(defn- define-binding
+  [state name binding]
+  (if-let [existing (when (:reuse-existing-bindings? state)
+                      (existing-cell-binding state name))]
+    (let [existing-id (env/binding-id existing)
+          source-id (env/binding-id binding)
+          value (when source-id
+                  (h/strongest-or-nothing (:net state) source-id))
+          net' (if (and source-id
+                        (not (value/unusable? value)))
+                 (h/seed-cell (:net state) existing-id value)
+                 (:net state))]
+      [(assoc state :net net'
+                    :env (env/bind-local (:env state) name existing))
+       existing])
+    [(assoc state :env (env/bind-local (:env state) name binding))
+     binding]))
+
+(defn- define-operator-binding
+  [state name operator result-binding]
+  (if-let [existing (when (:reuse-existing-bindings? state)
+                      (existing-cell-binding state name))]
+    (let [existing-id (env/binding-id existing)]
+      [(assoc state
+              :net (h/seed-cell (:net state) existing-id operator)
+              :env (env/bind-local (:env state) name existing))
+       existing])
+    [(assoc state :env (env/bind-local (:env state) name operator))
+     result-binding]))
+
 (defmulti g:compile
   (fn [expr _env _state]
     (common/expression-kind expr)))
@@ -227,10 +263,7 @@
                                                    (ast/inputs expr)
                                                    (ast/output expr)
                                                    (ast/body expr))]
-    [(assoc state' :env (env/bind-local (:env state')
-                                        (ast/name expr)
-                                        closure-binding))
-     closure-binding]))
+    (define-binding state' (ast/name expr) closure-binding)))
 
 (defn- constraint-operator
   [name lexical-env inputs body]
@@ -272,10 +305,7 @@
         [state' result-binding] (h/new-cell state
                                             [:def-constraint (ast/name expr)]
                                             operator)]
-    [(assoc state' :env (env/bind-local (:env state')
-                                        (ast/name expr)
-                                        operator))
-     result-binding]))
+    (define-operator-binding state' (ast/name expr) operator result-binding)))
 
 (defmethod g:compile :def
   [expr _env state]
@@ -283,15 +313,9 @@
     (let [[state' body-binding] (g:compile body
                                            (:env state)
                                            (h/child state :body))]
-      [(assoc state' :env (env/bind-local (:env state')
-                                          (ast/name expr)
-                                          body-binding))
-       body-binding])
+      (define-binding state' (ast/name expr) body-binding))
     (let [[state' binding] (h/new-cell state [:def (ast/name expr)])]
-      [(assoc state' :env (env/bind-local (:env state')
-                                          (ast/name expr)
-                                          binding))
-       binding])))
+      (define-binding state' (ast/name expr) binding))))
 
 (defmethod g:compile :def-cell
   [expr _env state]
@@ -299,10 +323,7 @@
                                                    (ast/inputs expr)
                                                    nil
                                                    (ast/body expr))]
-    [(assoc state' :env (env/bind-local (:env state')
-                                        (ast/name expr)
-                                        closure-binding))
-     closure-binding]))
+    (define-binding state' (ast/name expr) closure-binding)))
 
 (defmethod g:compile :application
   [expr _env state]
@@ -313,7 +334,8 @@
   ([expr] (compile-expr expr (h/default-env)))
   ([expr env] (compile-expr expr env {}))
   ([expr env {:keys [net seed path]
-              :or {net net/empty-net path []}}]
+              :or {net net/empty-net path []}
+              :as opts}]
    (let [seed (or seed (ids/new-node-id))
          [state result] (g:compile expr
                                    env
@@ -322,7 +344,9 @@
                                     :seed seed
                                     :path path
                                     :props []
-                                    :applications []})]
+                                    :applications []
+                                    :reuse-existing-bindings?
+                                    (:reuse-existing-bindings? opts)})]
      (common/compiled-map state result))))
 
 (defn compile-source
