@@ -84,6 +84,7 @@
                 (behavior/behavior-value
                  {:history (hist/records->history [(hist/point-record at v)])
                   :source-keys #{[:compiler-2/behavior-point out-id at]}
+                  :identities #{out-id}
                   :reducer behavior/event-history-reducer-id}))])))
 
 (defn behavior-point-operator []
@@ -344,6 +345,9 @@
                         :source-keys (if (seq source-keys*)
                                        folded-keys
                                        #{})
+                        :identities (if (seq source-keys*)
+                                      #{source-id}
+                                      #{})
                         :reducer reducer-id}))]))
         [(message out-id value/contradiction)]))))
 

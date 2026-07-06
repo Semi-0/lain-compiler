@@ -156,6 +156,8 @@
    {:history (behavior/history body-view)
     :source-keys (into (tagged-source-keys :operator operator-view)
                        (tagged-source-keys :body body-view))
+    :identities (set/union (behavior/identity-set operator-view)
+                           (behavior/identity-set body-view))
     :reducer (behavior-application-reducer-id app-id)}))
 
 (defn- record-history
@@ -177,6 +179,7 @@
       (behavior/behavior-value
        {:history slice-history
         :source-keys (behavior/source-keys arg-view)
+        :identities (behavior/identity-set arg-view)
         :reducer (behavior/reducer-id arg-view)}))))
 
 (defn- closure-slice-arg-views
@@ -210,6 +213,7 @@
   (behavior/behavior-value
    {:history (apply hist/history-union (map behavior/history body-views))
     :source-keys (apply set/union (map behavior/source-keys body-views))
+    :identities (apply set/union (map behavior/identity-set body-views))
     :reducer behavior/event-history-reducer-id}))
 
 (defn- closure-history-body-view

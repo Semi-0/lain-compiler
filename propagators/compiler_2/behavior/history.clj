@@ -43,6 +43,7 @@
   (behavior/behavior-value
    {:history (hist/records->history records)
     :source-keys (behavior/source-keys source)
+    :identities (behavior/identity-set source)
     :reducer (behavior/reducer-id source)}))
 
 (defn- behavior-content-value
@@ -84,6 +85,7 @@
             (behavior/behavior-value
              {:history hist/empty-history
               :source-keys #{}
+              :identities #{}
               :reducer behavior/latest-value-reducer-id}))])
 
 (defn- latest-output-selector
