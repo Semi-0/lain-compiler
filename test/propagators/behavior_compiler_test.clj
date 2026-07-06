@@ -114,7 +114,7 @@
           [a-id n1] (behavior-cell (behavior-net) left)
           [b-id n2] (behavior-cell n1 right)
           compiled (behavior-compiler/compile-source
-                    "(+ a b)"
+                    "(be:+ a b)"
                     (env-with {'a a-id 'b b-id})
                     {:net n2})
           result-net (run-compiled compiled)]
@@ -129,7 +129,7 @@
           [a-id n1] (behavior-cell (behavior-net) left)
           [b-id n2] (behavior-cell n1 right)
           compiled (behavior-compiler/compile-source
-                    "(+ a b)"
+                    "(be:+ a b)"
                     (env-with {'a a-id 'b b-id})
                     {:net n2})
           result-net (run-compiled compiled)]
@@ -140,7 +140,7 @@
     (let [input (behavior-view [(hist/point-record 6 2)] #{[:a 6]})
           [a-id n1] (behavior-cell (behavior-net) input)
           compiled (behavior-compiler/compile-source
-                    "(+ a 1)"
+                    "(be:+ a 1)"
                     (env-with {'a a-id})
                     {:net n1})
           result-net (run-compiled compiled)]
@@ -155,7 +155,7 @@
           [a-id n1] (behavior-cell (behavior-net) left)
           [b-id n2] (behavior-cell n1 right)
           compiled (behavior-compiler/compile-source
-                    "(+ a b)"
+                    "(be:+ a b)"
                     (env-with {'a a-id 'b b-id})
                     {:net n2})
           result-net (run-compiled compiled)]
@@ -165,7 +165,7 @@
 
 (deftest behavior-compiler-closure-declaration-is-latest-behavior
   (testing "a closure declaration emits behavior whose base is closure-info"
-    (let [compiled (behavior-compiler/compile-source "(:: [x] (+ x 1))"
+    (let [compiled (behavior-compiler/compile-source "(:: [x] (be:+ x 1))"
                                                      (h/behavior-env)
                                                      {:timestamp 4})
           closure-content (content (:net compiled) (:cell compiled))
@@ -183,7 +183,7 @@
     (let [input (behavior-view [(hist/point-record 6 2)] #{[:a 6]})
           [a-id n1] (behavior-cell (behavior-net) input)
           compiled (behavior-compiler/compile-source
-                    "((:: [x] (+ x 1)) a)"
+                    "((:: [x] (be:+ x 1)) a)"
                     (env-with {'a a-id})
                     {:net n1})
           result-net (run-compiled compiled)]
@@ -193,8 +193,8 @@
 
 (deftest behavior-compiler-closure-update-replaces-latest-output
   (testing "updating a closure cell changes later/refired application output"
-    (let [inc-info (closure-info-from-source "(:: [x] (+ x 1))")
-          double-info (closure-info-from-source "(:: [x] (* x 2))")
+    (let [inc-info (closure-info-from-source "(:: [x] (be:+ x 1))")
+          double-info (closure-info-from-source "(:: [x] (be:* x 2))")
           initial-closure (closure-view 0 #{0} inc-info)
           updated-closure (closure-view 1 #{1} double-info)
           input (behavior-view [(hist/point-record 6 10)] #{[:a 6]})
@@ -220,7 +220,7 @@
 
 (deftest behavior-compiler-same-closure-update-increases-closure-history
   (testing "the same latest closure can add retained history without changing the result"
-    (let [inc-info (closure-info-from-source "(:: [x] (+ x 1))")
+    (let [inc-info (closure-info-from-source "(:: [x] (be:+ x 1))")
           initial-closure (closure-view 0 #{0} inc-info)
           repeated-closure (closure-view 1 #{1} inc-info)
           input (behavior-view [(hist/point-record 6 10)] #{[:a 6]})
@@ -252,10 +252,10 @@
           [large-id n3] (behavior-cell n2 y-large)
           [caller-y-id n4] (behavior-cell n3 y-caller)
           small-info (closure-info-from-source
-                      "(:: [x] (+ x y))"
+                      "(:: [x] (be:+ x y))"
                       (env-with {'y small-id}))
           large-info (closure-info-from-source
-                      "(:: [x] (+ x y))"
+                      "(:: [x] (be:+ x y))"
                       (env-with {'y large-id}))
           initial-closure (closure-view 0 #{0} small-info)
           updated-closure (closure-view 1 #{1} large-info)
@@ -286,8 +286,8 @@
                     (env-with {'f f-id 'a a-id})
                     {:net n1})
           empty-result (run-compiled compiled)
-          inc-closure (closure-behavior-from-source "(:: [x] (+ x 1))" 0)
-          double-closure (closure-behavior-from-source "(:: [x] (* x 2))" 1)
+          inc-closure (closure-behavior-from-source "(:: [x] (be:+ x 1))" 0)
+          double-closure (closure-behavior-from-source "(:: [x] (be:* x 2))" 1)
           [inc-tasks n2] (seed-behavior-message empty-result f-id inc-closure)
           inc-result (core/run-tasks inc-tasks n2)
           [double-tasks n3] (seed-behavior-message inc-result
@@ -318,8 +318,8 @@
                     (env-with {'f f-id 'a a-id})
                     {:net n1})
           empty-result (run-compiled compiled)
-          inc-closure (closure-behavior-from-source "(:: [x] (+ x 1))" 0)
-          double-closure (closure-behavior-from-source "(:: [x] (* x 2))" 1)
+          inc-closure (closure-behavior-from-source "(:: [x] (be:+ x 1))" 0)
+          double-closure (closure-behavior-from-source "(:: [x] (be:* x 2))" 1)
           [inc-tasks n2] (seed-behavior-message empty-result f-id inc-closure)
           inc-result (core/run-tasks inc-tasks n2)
           [double-tasks n3] (seed-behavior-message inc-result
@@ -365,7 +365,7 @@
           [outer-x-id n1] (behavior-cell (behavior-net) outer)
           [arg-id n2] (behavior-cell n1 input)
           compiled (behavior-compiler/compile-source
-                    "((:: [x] (+ x 1)) a)"
+                    "((:: [x] (be:+ x 1)) a)"
                     (env-with {'x outer-x-id 'a arg-id})
                     {:net n2})
           result-net (run-compiled compiled)]

@@ -15,6 +15,7 @@
             [propagators.datastructures.behavior-algebra :as hist]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.dependency :as dependency]
+            [propagators.datastructures.event :as event]
             [propagators.datastructures.reducer-subnet :as reducer]
             [propagators.datastructures.scope-source :as scope-source]
             [propagators.datastructures.tms.distributed :as tms]
@@ -111,7 +112,7 @@
       [(message out-id value/contradiction)]
 
       :else
-      [(message out-id (obj/compound-object {at v}))])))
+      [(message out-id (event/active-event out-id out-id at v))])))
 
 (defn behavior-event-operator []
   (behavior-propagator-operator
@@ -128,6 +129,11 @@
          (= :behavior/event (first slot))
          (integer? (second slot))) (second slot)))
 
+(defn- event-update-fact
+  [update]
+  (let [v (:value update)]
+    (when (event/event-fact? v) v)))
+
 (defn- state-from-events
   [events retained-events]
   (behavior/history-state
@@ -142,8 +148,13 @@
 
 (defn- add-event-state
   [acc update]
-  (let [tick (some-> update :slot event-update-tick)
-        v (:value update)
+  (let [fact (event-update-fact update)
+        tick (if fact
+               (event/timestamp fact)
+               (some-> update :slot event-update-tick))
+        v (if fact
+            (event/event-value fact)
+            (:value update))
         events (behavior/state-events acc)]
     (cond
       (or (nil? tick)
@@ -203,8 +214,12 @@
       (value/contradiction? update) [(message out-id value/contradiction)]
       :else
       (case field
-        :tick [(message out-id (event-update-tick (:slot update)))]
-        :value [(message out-id (:value update))]))))
+        :tick [(message out-id (if-let [fact (event-update-fact update)]
+                                 (event/timestamp fact)
+                                 (event-update-tick (:slot update))))]
+        :value [(message out-id (if-let [fact (event-update-fact update)]
+                                  (event/event-value fact)
+                                  (:value update)))]))))
 
 (defn behavior-update-field-operator [field name]
   (behavior-propagator-operator
@@ -293,11 +308,14 @@
 
 (defn- behavior-source-event-keys
   [source]
-  (let [source* (obj/as-accessor-network source)
-        slot-keys (if (obj/accessor-network? source*)
-                    (obj/accessor-slot-keys source*)
-                    (obj/public-slot-keys (obj/compound-object source)))]
-    (set (keep event-update-tick slot-keys))))
+  (if (or (event/event-content? source)
+          (event/event-fact? source))
+    (set (map event/timestamp (event/facts source)))
+    (let [source* (obj/as-accessor-network source)
+          slot-keys (if (obj/accessor-network? source*)
+                      (obj/accessor-slot-keys source*)
+                      (obj/public-slot-keys (obj/compound-object source)))]
+      (set (keep event-update-tick slot-keys)))))
 
 (defn- valid-history-state?
   [state]
@@ -307,7 +325,10 @@
 
 (defn- behavior-closure-messages
   [network source-id closure-id init-id out-id]
-  (let [source (h/strongest-or-nothing network source-id)
+  (let [source-content (net/network-cell-content network source-id)
+        source (if (event/event-content? source-content)
+                 source-content
+                 (h/strongest-or-nothing network source-id))
         closure-info (h/strongest-or-nothing network closure-id)
         init (h/strongest-or-nothing network init-id)]
     (cond
@@ -438,20 +459,16 @@
 (defn bind-behavior-operators
   [compiler-env]
   (-> compiler-env
-      (env/bind-at '+ (stable-distributed-behavior-operator :+ core/+) 0)
-      (env/bind-at '- (stable-distributed-behavior-operator :- core/-) 0)
-      (env/bind-at '* (stable-distributed-behavior-operator :* core/*) 0)
-      (env/bind-at '/ (stable-distributed-behavior-operator :/ core//) 0)
+      (env/bind-at 'be:+ (stable-distributed-behavior-operator :+ core/+) 0)
+      (env/bind-at 'be:- (stable-distributed-behavior-operator :- core/-) 0)
+      (env/bind-at 'be:* (stable-distributed-behavior-operator :* core/*) 0)
+      (env/bind-at 'be:divide
+                   (stable-distributed-behavior-operator :/ core//)
+                   0)
       bind-behavior-construction-operators))
 
 (defn behavior-tms-env []
-  (-> (obj/empty-compound-object)
-      (env/set-depth 0)
+  (-> (h/default-env)
       bind-behavior-operators
-      (env/bind-at 'p:slot (h/slot-operator) 0)
-      (env/bind-at 'list (h/list-operator) 0)
-      (env/bind-at 'execute-sub-env (h/execute-sub-env-operator) 0)
-      (env/bind-at 'switch (h/switch-operator) 0)
-      (env/bind-at '-> (h/sync-operator) 0)
       compiler-tms/bind-distributed-tms-operators
       (env/bind-at '<-> (h/bi-sync-operator) 0)))

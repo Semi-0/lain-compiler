@@ -29,9 +29,10 @@ Current convention:
 
 - `p:` names expose low-level propagator/slot topology directly, for example
   `p:cons`, `p:car`, `p:cdr`, and `p:slot`.
-- `be:` names expose behavior-aware operators. `be` stands for behavior; these
-  forms project through behavior/latest-event semantics instead of ordinary
-  one-shot cell text semantics.
+- `be:` names expose explicit behavior operators. `be` stands for behavior;
+  behavior-history arithmetic is spelled `be:+`, `be:-`, `be:*`, and source
+  spelling `be:/` (internally `be:divide`). Plain `+`, `-`, `*`, and `/` remain
+  current-value arithmetic and lift over event-current values.
 - `io:` names expose boundary resources. The target direction is that every
   `io:*` form returns an instance/receipt cell for the external resource it
   registers.
@@ -58,8 +59,9 @@ Implemented behavior/TMS surface:
   `history-split-at` are compiler-2-backed. `be:latest`, `be:last`, and
   `be:history` are prefixed aliases. `(be:latest)` creates an empty
   latest-retaining behavior value; `(be:latest behavior)` projects an existing
-  behavior to its latest record. `latest` / `be:latest` and `last` / `be:last`
-  return behavior values and remain composable with behavior arithmetic.
+  behavior to its latest record; `(be:latest event)` promotes event content to a
+  latest-held behavior. `latest` / `be:latest` and `last` / `be:last` return
+  behavior values and remain composable with explicit `be:*` arithmetic.
 
 Still design/prototype work:
 
@@ -689,12 +691,12 @@ Latest-retaining behavior sugar:
 (define-behaviors a b c)
 
 (let-behaviour [a b c]
-  (<-> (- (+ a b) c) out))
+  (<-> (be:- (be:+ a b) c) out))
 ```
 
 Each behavior name declares the visible behavior cell and its sibling event
-source, for example `a` and `a-events`, then wires `a-events` through a
-latest-retaining reducer into `a`.
+source, for example `a` and `a-events`, then promotes `a-events` through
+`be:latest` into `a`.
 
 Current implementation:
 
@@ -1069,6 +1071,11 @@ Current implementation:
 - each cell is the view cell for its channel. If a sibling event-source cell
   exists by name, for example `a-events` for `a`, widget events route there;
   otherwise the same cell is both the view cell and event-source cell;
+- widget updates are monotone event facts. Plain cells can feed default
+  arithmetic directly as event-current values; behavior history still requires
+  explicit promotion through `be:latest` or `define-behaviors`;
+- `io:slider-panels` is accepted as a compatibility alias for
+  `io:slider-panel`;
 - applying `io:slider-panel` returns the generated panel descriptor cell;
 - the old public `(io:slider-panel (list ...))` and
   `(io:slider-panel "id" (list ...))` forms are removed. Use varargs cells and
@@ -1080,7 +1087,18 @@ Example:
 (define-behaviors a b c)
 (def out)
 (io:slider-panel a b c)
-(<-> (- (+ a b) c) out)
+(<-> (be:- (be:+ a b) c) out)
+```
+
+Plain event-current arithmetic does not require behavior promotion:
+
+```clojure
+(def-cells a b c d)
+(-> (- (+ a c) b) d)
+(def-cell g)
+(trace d g)
+(io:xr g)
+(io:slider-panels a b c)
 ```
 
 ```clojure
@@ -1092,7 +1110,9 @@ Verified in tests:
 
 - `io-slider-panel-registers-channel-names-from-cell-symbols`;
 - `io-slider-panel-defaults-panel-id-with-varargs`;
-- `io-slider-panel-routes-behavior-views-to-sibling-event-sources`.
+- `io-slider-panel-routes-behavior-views-to-sibling-event-sources`;
+- `tui-slider-panel-events-feed-default-arithmetic`;
+- `io-xr-tracks-default-event-arithmetic-from-slider-panel-alias`.
 
 The lower-level compatibility form remains available for split view/event
 channels:

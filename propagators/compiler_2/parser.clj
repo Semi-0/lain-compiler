@@ -18,7 +18,9 @@
   (throw (ex-info message data)))
 
 (defn- preprocess-source [source]
-  (str/replace source #"\(\s*::(?=\s)" (str "(" network-marker)))
+  (-> source
+      (str/replace #"\(\s*::(?=\s)" (str "(" network-marker))
+      (str/replace #"(?<=\(|\s)be:/" "be:divide")))
 
 (defn read-form
   "Read exactly one source form."
@@ -142,18 +144,9 @@
   [name]
   (when-not (symbol? name)
     (parse-error "behavior name must be a symbol" {:name name}))
-  (let [events-name (suffix-symbol name "-events")
-        reducer-name (suffix-symbol name "-retain-latest")]
+  (let [events-name (suffix-symbol name "-events")]
     [(list 'def-cells events-name name)
-     (list 'def-net reducer-name '[acc update] '[out]
-           (list 'let-cell '[full]
-                 (list 'behavior-add-event 'acc 'update 'full)
-                 (list 'behavior-retain-last 'full 1 'out)))
-     (list 'behavior
-           events-name
-           reducer-name
-           (list 'behavior-empty-state)
-           name)]))
+     (list 'be:latest events-name name)]))
 
 (defn- behavior-wiring-forms
   [name]

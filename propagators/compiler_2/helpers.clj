@@ -10,6 +10,7 @@
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.compound-object.network-slot :as network-slot]
             [propagators.datastructures.dependency :as dependency]
+            [propagators.datastructures.event :as event]
             [propagators.datastructures.scope-source :as scope-source]
             [propagators.datastructures.tms.distributed :as tms]
             [propagators.ids :as ids]
@@ -17,6 +18,7 @@
             [propagators.network :as net]
             [propagators.network-builder :as nb]
             [propagators.propagator :as prop]
+            [propagators.datastructures.behavior.core :as behavior]
             [propagators.datastructures.behavior.arithmetic :as behavior-arithmetic])
   (:import [java.nio.charset StandardCharsets]
            [java.util UUID]))
@@ -263,12 +265,43 @@
       (select-output arg-ids fallback-id)
       fallback-id)))
 
+(defn- behavior-projection?
+  [v]
+  (and (contains? (obj/public-slot-keys v) behavior/base-layer)
+       (contains? (obj/public-slot-keys v) behavior/summary-layer)))
+
+(defn- unwrap-behavior-current
+  [v]
+  (cond
+    (behavior-projection? v) (behavior/base-value v)
+    (behavior/behavior-value? v) (unwrap-behavior-current
+                                  (behavior/strongest-value v))
+    :else v))
+
+(defn- unwrap-event-current
+  [v]
+  (cond
+    (event/event-projection? v)
+    (let [values (vals (event/active-values v))]
+      (cond
+        (empty? values) value/nothing
+        (apply = values) (first values)
+        :else value/contradiction))
+
+    (or (event/event-content? v)
+        (event/event-fact? v))
+    (unwrap-event-current (event/strongest-value v))
+
+    :else v))
+
 (defn- unwrap-compiler-value
   [v]
   (-> v
       scope-source/unwrap
       tms/distributed-base-value
-      dependency/unwrap))
+      dependency/unwrap
+      unwrap-event-current
+      unwrap-behavior-current))
 
 (declare dependency-sources)
 
@@ -282,14 +315,32 @@
       (or (tms/distributed-result-update claim-id result* arg-contents)
           result*))))
 
+(defn- event-lift-message
+  [claim-id f arg-contents bases]
+  (when-let [update (event/lift claim-id f arg-contents bases)]
+    (when-not (value/nothing? update)
+      update)))
+
 (defn- primitive-messages
   [f current-net arg-ids out-id]
   (let [arg-values (mapv #(net/network-cell-strongest current-net %) arg-ids)
         arg-contents (mapv #(net/network-cell-content current-net %) arg-ids)
-        bases (mapv unwrap-compiler-value arg-values)]
+        bases (mapv unwrap-compiler-value arg-values)
+        claim-id [:compiler-2/primitive out-id]]
     (cond
       (some value/contradiction? bases)
       []
+
+      (some value/contradiction? arg-contents)
+      []
+
+      (some #(or (event/event-content? %)
+                 (event/event-fact? %)
+                 (event/event-projection? %))
+            arg-contents)
+      (if-let [update (event-lift-message claim-id f arg-contents bases)]
+        [(message out-id update)]
+        [])
 
       (some value/nothing? bases)
       (if-let [update (tms/distributed-state-update arg-contents)]
@@ -298,7 +349,7 @@
 
       :else
       [(message out-id
-                (wrap-primitive-result [:compiler-2/primitive out-id]
+                (wrap-primitive-result claim-id
                                        (apply f bases)
                                        arg-values
                                        arg-contents))])))
@@ -673,31 +724,11 @@
   (operator-env contextual-primitive-operator))
 
 (defn behavior-env []
-  (-> (obj/empty-compound-object)
-      (env/set-depth 0)
-      (env/bind-at '+ (behavior-operator :+ core/+) 0)
-      (env/bind-at '- (behavior-operator :- core/-) 0)
-      (env/bind-at '* (behavior-operator :* core/*) 0)
-      (env/bind-at '/ (behavior-operator :/ core//) 0)
-      (env/bind-at 'p:slot (slot-operator) 0)
-      (env/bind-at 'execute-sub-env (execute-sub-env-operator) 0)
-      (env/bind-at 'switch (switch-operator) 0)
-      (env/bind-at 'if (if-operator) 0)
-      (env/bind-at 'branch (branch-operator) 0)
-      (env/bind-at 'nothing? (predicate-operator 'nothing? :nothing) 0)
-      (env/bind-at 'contradiction? (predicate-operator 'contradiction? :contradiction) 0)
-      (env/bind-at 'value? (predicate-operator 'value? :value) 0)
-      (env/bind-at 'symbol? (predicate-operator 'symbol? :symbol) 0)
-      (env/bind-at 'string? (predicate-operator 'string? :string) 0)
-      (env/bind-at 'number? (predicate-operator 'number? :number) 0)
-      (env/bind-at 'boolean? (predicate-operator 'boolean? :boolean) 0)
-      (env/bind-at 'cell? (predicate-operator 'cell? :cell) 0)
-      (env/bind-at 'network? (predicate-operator 'network? :network) 0)
-      (env/bind-at 'closure? (predicate-operator 'closure? :closure) 0)
-      (env/bind-at 'behavior? (predicate-operator 'behavior? :behavior) 0)
-      (env/bind-at 'tms? (predicate-operator 'tms? :tms) 0)
-      (env/bind-at '-> (sync-operator) 0)
-      (env/bind-at '<-> (bi-sync-operator) 0)))
+  (-> (default-env)
+      (env/bind-at 'be:+ (behavior-operator :+ core/+) 0)
+      (env/bind-at 'be:- (behavior-operator :- core/-) 0)
+      (env/bind-at 'be:* (behavior-operator :* core/*) 0)
+      (env/bind-at 'be:divide (behavior-operator :/ core//) 0)))
 
 (defn behavior-tms-env []
   ((requiring-resolve

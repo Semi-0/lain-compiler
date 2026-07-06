@@ -8,6 +8,7 @@
             [propagators.datastructures.behavior-algebra :as hist]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.dependency :as dependency]
+            [propagators.datastructures.event :as event]
             [propagators.datastructures.scope-source :as scope-source]
             [propagators.datastructures.tms.distributed :as tms]
             [propagators.message :refer [message]]
@@ -72,6 +73,26 @@
     (cond
       (value/nothing? v) []
       (value/contradiction? v) [(message out-id value/contradiction)]
+      (or (event/event-content? v)
+          (event/event-fact? v))
+      (let [facts (vec (event/active-facts v))
+            all-facts (vec (event/facts v))]
+        (if (seq all-facts)
+          [(message
+            out-id
+            (behavior/behavior-value
+             {:history (hist/records->history
+                        (map #(hist/point-record
+                               (event/timestamp %)
+                               (event/event-value %))
+                             facts))
+              :source-keys (event/evidence v)
+              :identities (set (map (fn [fact]
+                                      [(event/input-id fact)
+                                       (event/source fact)])
+                                    all-facts))
+              :reducer behavior/latest-value-reducer-id}))]
+          []))
       :else
       (let [records (vec (sorted-history-records v))
             selected (peek records)]
