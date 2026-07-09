@@ -11,6 +11,7 @@
             [propagators.compiler-2.closure-value :as closure-value]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.lazy-topology :as lazy-topology]
             [propagators.compiler-2.operator-value :as operator-value]
             [propagators.compiler-2.parser :as parser]
             [propagators.compiler-common.core :as common]
@@ -151,29 +152,87 @@
 (defn- compile-application [state op args]
   (common/compile-application g:compile g:advance g:apply state op args))
 
-(defn- compile-network [state inputs output body]
-  (let [lexical-env (:env state)
-        lexical-scope (env/scope-id lexical-env)
-        closure-object (closure-value/closure-object lexical-env
-                                                      body
-                                                      inputs
-                                                      output
-                                                      lexical-scope)
-        [state-with-env lexical-env-binding] (h/new-cell state
-                                                         :closure-env
-                                                         lexical-env)
-        lexical-env-id (env/binding-id lexical-env-binding)
-        [state-with-closure closure-binding] (h/new-cell state-with-env
-                                                         :closure
-                                                         closure-object)
-        closure-id (env/binding-id closure-binding)
-        [env-slot-prop n']
-        ((obj/p:slot closure-value/closure-env-slot lexical-env-id closure-id)
-         (:net state-with-closure))]
-    [(-> state-with-closure
-         (assoc :net n')
-         (h/add-props [env-slot-prop]))
-     (env/compound-binding closure-id)]))
+(defn- copied-env-value
+  [parent-env locals]
+  (env/bind-locals parent-env locals))
+
+(defn- copied-closure-object
+  [env body inputs output]
+  (closure-value/closure-object env
+                                body
+                                inputs
+                                output
+                                (env/scope-id env)))
+
+(defn- refresh-env-copies
+  [state parent-env]
+  (reduce
+   (fn [state {:keys [source-scope env-id closure-id locals body inputs output
+                      prop-id]}]
+     (if (= source-scope (env/scope-id parent-env))
+       (let [env' (copied-env-value parent-env locals)]
+         (-> state
+             (update :net h/seed-cell env-id env')
+             (update :net h/seed-cell closure-id
+                     (copied-closure-object env' body inputs output))
+             (h/add-props [prop-id])))
+       state))
+   state
+   (:compiler-2/env-copies state)))
+
+(defn- remember-env-copy
+  [state parent-env env-id closure-id locals body inputs output prop-id]
+  (update state
+          :compiler-2/env-copies
+          conj
+          {:source-scope (env/scope-id parent-env)
+           :env-id env-id
+           :closure-id closure-id
+           :locals locals
+           :body body
+           :inputs inputs
+           :output output
+           :prop-id prop-id}))
+
+(defn- compile-network
+  ([state inputs output body]
+   (compile-network state nil inputs output body))
+  ([state name inputs output body]
+   (let [parent-env (:env state)
+         closure-id (h/node-id state :closure)
+         self-binding (env/compound-binding closure-id)
+         locals (if name {name self-binding} {})
+         lexical-env (copied-env-value parent-env locals)
+         lexical-scope (env/scope-id lexical-env)
+         closure-object (copied-closure-object lexical-env body inputs output)
+         closure-env-id (h/node-id state :closure-env)
+         closure-binding (env/compound-binding closure-id)
+         state-with-env (assoc state
+                               :net (h/seed-cell (:net state)
+                                                 closure-env-id
+                                                 lexical-env))
+         state-with-closure (assoc state-with-env
+                                   :net (h/seed-cell (:net state-with-env)
+                                                     closure-id
+                                                     closure-object))
+         [env-slot-prop n']
+         ((obj/p:slot closure-value/closure-env-slot closure-env-id closure-id)
+          (:net state-with-closure))
+         state' (-> state-with-closure
+                    (assoc :net n')
+                    (h/add-props [env-slot-prop]))]
+     [(if name
+        (remember-env-copy state'
+                           parent-env
+                           closure-env-id
+                           closure-id
+                           locals
+                           body
+                           inputs
+                           output
+                           env-slot-prop)
+        state')
+      closure-binding])))
 
 (defn- existing-cell-binding
   [state name]
@@ -193,11 +252,16 @@
                         (not (value/unusable? value)))
                  (h/seed-cell (:net state) existing-id value)
                  (:net state))]
-      [(assoc state :net net'
-                    :env (env/bind-local (:env state) name existing))
+      [(-> state
+           (assoc :net net'
+                  :env (env/bind-local (:env state) name existing))
+           (refresh-env-copies (env/bind-local (:env state) name existing)))
        existing])
-    [(assoc state :env (env/bind-local (:env state) name binding))
-     binding]))
+    (let [env' (env/bind-local (:env state) name binding)]
+      [(-> state
+           (assoc :env env')
+           (refresh-env-copies env'))
+       binding])))
 
 (defn- define-operator-binding
   [state name operator result-binding]
@@ -249,6 +313,21 @@
      (apply ast/sequence*
             (concat binding-forms [(ast/body expr)])))))
 
+(defmethod g:compile :when-topology
+  [expr _env state]
+  (let [base-path (:path state)
+        [state' condition-binding] (g:compile (ast/condition expr)
+                                              (:env state)
+                                              (h/child state :condition))
+        condition-id (env/binding-id condition-binding)]
+    (when-not condition-id
+      (throw (ex-info "when condition must compile to a cell"
+                      {:condition condition-binding})))
+    (lazy-topology/install-when-topology
+     (assoc state' :path base-path)
+     condition-id
+     (ast/body expr))))
+
 (defmethod g:compile :network
   [expr _env state]
   (compile-network state (ast/inputs expr) nil (ast/body expr)))
@@ -260,6 +339,7 @@
 (defmethod g:compile :def-net
   [expr _env state]
   (let [[state' closure-binding] (compile-network state
+                                                   (ast/name expr)
                                                    (ast/inputs expr)
                                                    (ast/output expr)
                                                    (ast/body expr))]
@@ -320,6 +400,7 @@
 (defmethod g:compile :def-cell
   [expr _env state]
   (let [[state' closure-binding] (compile-network state
+                                                   (ast/name expr)
                                                    (ast/inputs expr)
                                                    nil
                                                    (ast/body expr))]

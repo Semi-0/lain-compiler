@@ -470,8 +470,8 @@
   (let [a-update (sync-update network a)
         b-update (sync-update network b)]
     (cond-> []
-      a-update (conj (message b a-update))
-      b-update (conj (message a b-update)))))
+      (some? a-update) (conj (message b a-update))
+      (some? b-update) (conj (message a b-update)))))
 
 (declare forward-sync-messages)
 
@@ -491,9 +491,10 @@
 
 (defn- forward-sync-messages
   [network a b]
-  (if-let [a-update (sync-update network a)]
-    [(message b a-update)]
-    []))
+  (let [a-update (sync-update network a)]
+    (if (some? a-update)
+      [(message b a-update)]
+      [])))
 
 (defn- sync-chain-ids
   [name arg-ids]
@@ -690,6 +691,12 @@
        (env/bind-at '- (operator-builder core/-) 0)
        (env/bind-at '* (operator-builder core/*) 0)
        (env/bind-at '/ (operator-builder core//) 0)
+       (env/bind-at '< (operator-builder core/<) 0)
+       (env/bind-at '<= (operator-builder core/<=) 0)
+       (env/bind-at '> (operator-builder core/>) 0)
+       (env/bind-at '>= (operator-builder core/>=) 0)
+       (env/bind-at '= (operator-builder core/=) 0)
+       (env/bind-at 'not (operator-builder core/not) 0)
        (env/bind-at 'switch (switch-operator) 0)
        (env/bind-at 'if (if-operator) 0)
        (env/bind-at 'branch (branch-operator) 0)

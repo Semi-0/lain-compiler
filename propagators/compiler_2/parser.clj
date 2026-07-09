@@ -220,6 +220,15 @@
            (parse-form then-expr)
            (parse-form else-expr)))
 
+(defn- parse-when [[condition & body]]
+  (when (or (nil? condition)
+            (not (seq body)))
+    (parse-error "when expects a condition and at least one body expression"
+                 {:condition condition
+                  :body body}))
+  (ast/when-topology (parse-form condition)
+                     (body-form body "when")))
+
 (defn- parse-cond-form [[clauses]]
   (when-not (vector? clauses)
     (parse-error "cond expects one vector of condition/expression clauses"
@@ -281,6 +290,7 @@
       let-behaviour (parse-let-behavior (rest form))
       compound (parse-compound (rest form))
       if (parse-if (rest form))
+      when (parse-when (rest form))
       cond (parse-cond-form (rest form))
       app-> (removed-form form)
       do (removed-form form)

@@ -1,6 +1,6 @@
 # Compiler-2 Syntax Design
 
-Current checkpoint: 2026-07-05.
+Current checkpoint: 2026-07-10.
 
 Compiler-2 is a propagator-language prototype. The syntax should expose ordinary
 propagator topology, closure/network values, behavior/TMS composition, and
@@ -18,7 +18,9 @@ Implemented compiler-2 surface:
 - linked list construction through `list`, lowered to `p:cons` topology;
 - generic compound slot access through `p:slot`;
 - value-level conditionals: `switch`, `if`, `branch`, and `cond`;
-- arithmetic, variadic `->`, and variadic `<->`;
+- topology-lazy presence-gated `when`;
+- arithmetic/comparison primitives, boolean `not`, variadic `->`, and
+  variadic `<->`;
 - behavior/TMS default entry through
   `propagators.compiler-2.main/compile-source-with-behavior-tms`;
 - runtime/TUI/XR operators through the compiler-2 runtime env.
@@ -65,9 +67,8 @@ Implemented behavior/TMS surface:
 
 Still design/prototype work:
 
-- topology-lazy `when` should lower to accumulating GUR. It is not switch sugar;
-- recursion syntax, recursive `for`, and structural `reduce` need GUR/compiler
-  integration;
+- structural recursion syntax, recursive `for`, and structural `reduce` need
+  GUR/compiler integration;
 - `history-reduce`, `history-map`, `history-filter`, predicate-based history
   operators, generic/layered extension syntax, reflection, search, networking,
   and macros remain design targets.
@@ -230,7 +231,10 @@ Current implementation:
 - defines a named closure value;
 - the name cell owns the definition closure;
 - declared outputs must be supplied explicitly at application sites;
-- native tail recursion is not part of the implemented surface yet.
+- named closure values capture a copied lexical env value. The copy includes the
+  closure's own binding and receives later same-scope declarations, so ordinary
+  self-application can be used inside lazy topology without `def-recursive`,
+  `recur`, recursion detection, or tail-position analysis.
 
 ### Anonymous Network
 
@@ -355,9 +359,32 @@ Current implementation:
 
 Current implementation:
 
-- not implemented as compiler-2 surface syntax;
-- design target is accumulating GUR lazy topology;
+- implemented as compiler-2 surface syntax;
+- compiles the condition immediately and delays the body topology;
+- `nothing` waits and installs nothing;
+- contradiction propagates contradiction to the delayed topology result;
+- any other usable concrete value, including `false`, installs body topology
+  once;
 - distinct from `switch`: `when` is a topology builder, not a value predicate.
+
+Boolean guards should be expressed with `switch`, because `false` is still a
+usable value:
+
+```clojure
+(when (switch true base?)
+  (-> n out))
+
+(when (switch true recur?)
+  (fib (- n 1) a)
+  (fib (- n 2) b)
+  (-> (+ a b) out))
+```
+
+Verified in tests:
+
+- `compile-2-presence-when-delays-body-topology`;
+- `compile-2-presence-when-supports-direct-recursive-style`;
+- `compile-2-presence-when-supports-fib-style-gur`.
 
 ## Recursion And Iteration
 
@@ -373,10 +400,33 @@ Current implementation:
 
 Current implementation:
 
-- user-facing recursive syntax is not implemented;
-- accumulating GUR is the intended substrate for recursive topology, recursive
-  AST/list traversal, macro-like expansion, and topology-lazy `when`;
-- a self-recursive `def-net` currently does not provide productive recursion.
+- user-facing `for`, structural `reduce`, `def-recursive`, and `recur` syntax
+  are not implemented;
+- ordinary self-application inside topology-lazy `when` is implemented for
+  scalar GUR-style recursion;
+- named closures capture a copied lexical env, not a global runtime snapshot;
+- structural list/map GUR remains a design boundary. The current linked-list
+  representation can build lists with `list`/`cons`/`car`/`cdr`, but a recursive
+  map-style GUR currently needs a safer identity seed and tail-presence
+  protocol before it should be documented as supported.
+
+Example:
+
+```clojure
+(let-cell [out]
+  (def-net fib [n] [out]
+    (let-cell [base? recur? a b]
+      (-> (<= n 1) base?)
+      (-> (not base?) recur?)
+      (when (switch true base?)
+        (-> n out))
+      (when (switch true recur?)
+        (fib (- n 1) a)
+        (fib (- n 2) b)
+        (-> (+ a b) out))))
+  (fib 6 out)
+  out)
+```
 
 ## Compound Data
 
@@ -474,6 +524,8 @@ Current implementation:
 (- a b)
 (* a b)
 (/ a b)
+(<= a b)
+(not done?)
 ```
 
 ```clojure
@@ -486,7 +538,9 @@ Current implementation:
 Current implementation:
 
 - arithmetic is available in default compiler-2 env;
-- the behavior/TMS env replaces arithmetic with behavior/TMS-aware wrappers;
+- comparison primitives `<`, `<=`, `>`, `>=`, `=`, and boolean `not` are
+  available in the default compiler-2 env;
+- behavior arithmetic is explicit through `be:+`, `be:-`, `be:*`, and `be:/`;
 - `->` performs one-way sync and supports adjacent chains;
 - `<->` performs bidirectional sync and supports adjacent chains;
 - both return the last cell in the chain.

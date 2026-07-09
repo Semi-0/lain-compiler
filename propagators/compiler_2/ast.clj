@@ -10,6 +10,7 @@
 (def name-slot :ast/name)
 (def operator-slot :ast/operator)
 (def args-slot :ast/args)
+(def condition-slot :ast/condition)
 (def body-slot :ast/body)
 (def names-slot :ast/names)
 (def inputs-slot :ast/inputs)
@@ -22,6 +23,7 @@
     name-slot
     operator-slot
     args-slot
+    condition-slot
     body-slot
     names-slot
     bindings-slot
@@ -47,6 +49,11 @@
 (defn sequence* [& body]
   (ast-object {type-slot :sequence
                body-slot (mapv ast body)}))
+
+(defn when-topology [condition body]
+  (ast-object {type-slot :when-topology
+               condition-slot (ast condition)
+               body-slot (ast body)}))
 
 (defn let-cell [names body]
   (ast-object {type-slot :let-cell
@@ -117,6 +124,7 @@
 (defn name [expr] (slot expr name-slot))
 (defn operator [expr] (slot expr operator-slot))
 (defn args [expr] (slot expr args-slot))
+(defn condition [expr] (slot expr condition-slot))
 (defn body [expr] (slot expr body-slot))
 (defn names [expr] (slot expr names-slot))
 (defn bindings [expr] (slot expr bindings-slot))
