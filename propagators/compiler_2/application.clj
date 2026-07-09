@@ -65,29 +65,36 @@
           value/nothing
           values))
 
+(defn- accessor-slot-value
+  [v network slot-key]
+  (let [parent-values
+        (->> (obj/accessor-parent-ids v slot-key)
+             (filter #(contains? (net/net-env network) %))
+             (map #(activation-cell-value network %))
+             (remove value/unusable?))]
+    (cond
+      (seq parent-values)
+      (single-slot-value parent-values)
+
+      (obj/accessor-source-slot-present? v slot-key)
+      (obj/accessor-source-slot-value v slot-key)
+
+      :else
+      value/nothing)))
+
 (defn- externalize-accessor-value
   [v network]
   (if-not (obj/accessor-network? v)
     v
-    (let [slot-map
+    (let [source-slots
           (into {}
-                (keep
-                 (fn [slot-key]
-                   (let [parent-values
-                         (->> (obj/accessor-parent-ids v slot-key)
-                              (filter #(contains? (net/net-env network) %))
-                              (map #(activation-cell-value network %))
-                              (remove value/unusable?))
-                         slot-value
-                         (if (seq parent-values)
-                           (single-slot-value parent-values)
-                           (when (obj/accessor-source-slot-present? v slot-key)
-                             (obj/accessor-source-slot-value v slot-key)))]
-                     (when-not (value/unusable? slot-value)
+                (map (fn [slot-key]
                        [slot-key
-                        (externalize-accessor-value slot-value network)]))))
+                        (externalize-accessor-value
+                         (accessor-slot-value v network slot-key)
+                         network)]))
                 (obj/accessor-slot-keys v))]
-      (obj/compound-object slot-map))))
+      (obj/as-accessor-network source-slots))))
 
 (defn- externalize-output-value
   [v network]
