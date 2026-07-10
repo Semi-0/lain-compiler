@@ -83,18 +83,32 @@
       value/nothing)))
 
 (defn- externalize-accessor-value
-  [v network]
-  (if-not (obj/accessor-network? v)
-    v
-    (let [source-slots
-          (into {}
-                (map (fn [slot-key]
-                       [slot-key
-                        (externalize-accessor-value
-                         (accessor-slot-value v network slot-key)
-                         network)]))
-                (obj/accessor-slot-keys v))]
-      (obj/as-accessor-network source-slots))))
+  ([v network]
+   (externalize-accessor-value v network #{}))
+  ([v network seen]
+   (cond
+     (not (obj/accessor-network? v))
+     v
+
+     (contains? seen (System/identityHashCode v))
+     value/nothing
+
+     :else
+     (let [seen' (conj seen (System/identityHashCode v))
+           source-slots
+           (into {}
+                 (keep (fn [slot-key]
+                         (let [slot-value
+                               (externalize-accessor-value
+                                (accessor-slot-value v network slot-key)
+                                network
+                                seen')]
+                           (when-not (value/unusable? slot-value)
+                             [slot-key slot-value]))))
+                 (obj/accessor-slot-keys v))]
+       (if (seq source-slots)
+         (obj/as-accessor-network source-slots)
+         value/nothing)))))
 
 (defn- externalize-output-value
   [v network]
@@ -107,6 +121,17 @@
 
     :else
     v))
+
+(defn- externalized-cell-value
+  [network id]
+  (let [content (cell-content-or-nothing network id)
+        strongest (h/strongest-or-nothing network id)
+        content-value (when-not (value/unusable? content)
+                        (externalize-output-value content network))]
+    (if (and content-value
+             (not (value/unusable? content-value)))
+      content-value
+      (externalize-output-value strongest network))))
 
 (defn- output-symbols
   [output]
@@ -150,6 +175,14 @@
     (install-output-adapter n result-id (first output-inners))
     [n []]))
 
+(defn- output-inners-ready?
+  [network output-inners]
+  (and (seq output-inners)
+       (every? (fn [out-inner]
+                 (not (value/unusable?
+                       (externalized-cell-value network out-inner))))
+               output-inners)))
+
 (defn- cell-content-or-nothing
   [network id]
   (if (contains? (net/net-env network) id)
@@ -160,14 +193,8 @@
   [network-from network-to external-outputs]
   (keep identity
         (map (fn [ext]
-               (when-let [int-id (net/lookup-inner-out network-from ext)]
-                 (let [inner-content (cell-content-or-nothing network-from int-id)
-                       inner-strongest (h/strongest-or-nothing network-from int-id)
-                       output-value (externalize-output-value
-                                     (if (value/unusable? inner-content)
-                                       inner-strongest
-                                       inner-content)
-                                     network-from)
+                 (when-let [int-id (net/lookup-inner-out network-from ext)]
+                 (let [output-value (externalized-cell-value network-from int-id)
                        outer-content (cell-content-or-nothing network-to ext)
                        outer-value (if (value/unusable? outer-content)
                                      (h/strongest-or-nothing network-to ext)
@@ -221,13 +248,18 @@
                                     :path []
                                     :props []})
                   result-id (env/binding-id result)
-                  [activation-net adapter-props]
-                  (install-output-adapters (:net state')
-                                           result-id
-                                           output-inners)]
-              (run-activation-network activation-net
-                                      inner-inputs
-                                      (into (:props state') adapter-props))))))))
+                  body-net (run-activation-network (:net state')
+                                                   inner-inputs
+                                                   (:props state'))]
+              (if (output-inners-ready? body-net output-inners)
+                body-net
+                (let [[activation-net adapter-props]
+                      (install-output-adapters body-net
+                                               result-id
+                                               output-inners)]
+                  (run-activation-network activation-net
+                                          inner-inputs
+                                          adapter-props)))))))))
 
 (defn- closure-call-plan
   [closure-info arg-ids out-id]
