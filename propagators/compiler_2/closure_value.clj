@@ -18,6 +18,8 @@
 (def closure-output-slot :closure/output)
 (def closure-scope-slot :closure/scope)
 
+(def implicit-return-namespace "compiler-2.implicit-return")
+
 (def closure-slots
   #{closure-env-slot
     closure-body-slot
@@ -39,6 +41,21 @@
     closure-inputs-slot (vec inputs)
     closure-output-slot output
     closure-scope-slot scope}))
+
+(defn implicit-return-symbol
+  [id]
+  (symbol implicit-return-namespace (str id)))
+
+(defn implicit-return-symbol?
+  [x]
+  (and (symbol? x)
+       (= implicit-return-namespace (namespace x))))
+
+(defn implicit-return-output?
+  [output]
+  (and (vector? output)
+       (= 1 (count output))
+       (implicit-return-symbol? (first output))))
 
 (defn closure-env [closure-info]
   (obj/slot-value closure-info closure-env-slot))

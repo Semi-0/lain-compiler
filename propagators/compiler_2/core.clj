@@ -30,7 +30,8 @@
 (defn- install-application-propagator
   [state app-id operator-ast operator-id result-id context-id]
   (common/install-application-propagator state
-                                         compiler-app/p:apply-application
+                                         (or (:application-installer state)
+                                             compiler-app/p:apply-application)
                                          app-id
                                          operator-ast
                                          operator-id
@@ -91,6 +92,30 @@
     (vector? output) output
     :else []))
 
+(defn- hidden-return-symbol
+  [state]
+  (closure-value/implicit-return-symbol
+   (ids/unwrap-node-id (h/node-id state :implicit-return))))
+
+(defn- route-body-result
+  [body output-sym]
+  (let [route #(ast/app (ast/sym '->) % (ast/sym output-sym))]
+    (if (= :sequence (ast/type body))
+      (let [forms (vec (ast/body body))]
+        (apply ast/sequence*
+               (concat (butlast forms)
+                       [(route (last forms))])))
+      (route body))))
+
+(defn- normalize-closure-output
+  [state output body]
+  (if (nil? output)
+    (let [return-sym (hidden-return-symbol state)]
+      {:output [return-sym]
+       :body (route-body-result body return-sym)})
+    {:output output
+     :body body}))
+
 (defn- known-closure-info
   [network id]
   (let [v (h/strongest-or-nothing network id)]
@@ -102,18 +127,58 @@
   (if-let [closure-info (known-closure-info (:net state) operator-id)]
     (let [inputs (closure-value/closure-inputs closure-info)
           outputs (closure-output-symbols
-                   (closure-value/closure-output closure-info))]
+                   (closure-value/closure-output closure-info))
+          implicit-return? (closure-value/implicit-return-output?
+                            (closure-value/closure-output closure-info))]
       (if (seq outputs)
-        (do
-          (when-not (= (count arg-ids)
-                       (+ (count inputs) (count outputs)))
-            (throw (ex-info "network application requires explicit output cells"
-                            {:inputs inputs
-                             :outputs outputs
-                             :arg-count (count arg-ids)})))
-          (peek arg-ids))
+        (cond
+          (and implicit-return? (= (count arg-ids) (count inputs)))
+          out-id
+
+          (= (count arg-ids) (+ (count inputs) (count outputs)))
+          (peek arg-ids)
+
+          :else
+          (throw (ex-info "network application requires explicit output cells"
+                          {:inputs inputs
+                           :outputs outputs
+                           :arg-count (count arg-ids)})))
         out-id))
     out-id))
+
+(defn- install-retained-closure-frame
+  [state operator-id closure-info arg-ids out-id]
+  (when-let [{:keys [input-ids targets]}
+             (compiler-app/closure-call-plan closure-info arg-ids out-id)]
+    (let [frame-env (compiler-app/closure-body-env
+                     (closure-value/closure-env closure-info)
+                     (closure-value/closure-inputs closure-info)
+                     targets
+                     input-ids)
+          [state' frame-binding] (h/new-cell state :closure-frame-env frame-env)
+          frame-id (env/binding-id frame-binding)
+          installer @(requiring-resolve
+                      'propagators.compiler-2.closure-frame/p:apply-closure)
+          [prop-id network'] ((installer operator-id frame-id) (:net state'))
+          result-id (if (seq (closure-output-symbols
+                              (closure-value/closure-output closure-info)))
+                      (second (first targets))
+                      out-id)]
+      [(-> state'
+           (assoc :net network')
+           (h/add-props [prop-id]))
+       (env/cell-binding result-id)])))
+
+(defn- install-retained-lexical-closure
+  [state operator-id arg-ids out-id]
+  (let [installer @(requiring-resolve
+                    'propagators.compiler-2.lexical-application/p:apply-lexical-closure)
+        network (h/ensure-cell (:net state) out-id)
+        [prop-id network'] ((installer operator-id arg-ids out-id) network)]
+    [(-> state
+         (assoc :net network')
+         (h/add-props [prop-id]))
+     (env/cell-binding out-id)]))
 
 (defmethod g:apply :cell
   [operator-binding operand-forms _calling-env state out-id]
@@ -125,24 +190,36 @@
     (when-not (every? some? arg-ids)
       (throw (ex-info "application arguments must compile to cells"
                       {:args arg-bindings})))
-    (let [[state'' args-binding] (common/install-argument-object state' arg-ids)
+    (let [operator-id (env/binding-id operator-binding)
+          closure-info (known-closure-info (:net state') operator-id)]
+      (if (:closure-frame-mode? state')
+        (if closure-info
+          (or (install-retained-closure-frame state'
+                                               operator-id
+                                               closure-info
+                                               arg-ids
+                                               out-id)
+              (throw (ex-info "retained closure arguments do not match closure"
+                              {:operator-id operator-id :arg-ids arg-ids})))
+          (install-retained-lexical-closure state' operator-id arg-ids out-id))
+        (let [[state'' args-binding]
+              (common/install-argument-object state' arg-ids)
           args-id (env/binding-id args-binding)
-          operator-id (env/binding-id operator-binding)
           result-id (closure-application-result-id state''
                                                    operator-id
                                                    arg-ids
                                                    out-id)]
-      [(-> state''
-           (assoc :application/args-id args-id
-                  :application/arg-ids arg-ids
-                  :application/lowering :closure-cell)
-           (install-application-propagator
-            app-id
-            operator-ast
-            operator-id
-            result-id
-            context-id))
-       (env/cell-binding result-id)])))
+          [(-> state''
+               (assoc :application/args-id args-id
+                      :application/arg-ids arg-ids
+                      :application/lowering :closure-cell)
+               (install-application-propagator
+                app-id
+                operator-ast
+                operator-id
+                result-id
+                context-id))
+           (env/cell-binding result-id)])))))
 
 (defmethod g:apply :unsupported
   [operator-binding _operand-forms _calling-env _state _out-id]
@@ -198,13 +275,18 @@
   ([state inputs output body]
    (compile-network state nil inputs output body))
   ([state name inputs output body]
-   (let [parent-env (:env state)
+   (let [{closure-output :output closure-body :body}
+         (normalize-closure-output state output body)
+         parent-env (:env state)
          closure-id (h/node-id state :closure)
          self-binding (env/compound-binding closure-id)
          locals (if name {name self-binding} {})
          lexical-env (copied-env-value parent-env locals)
          lexical-scope (env/scope-id lexical-env)
-         closure-object (copied-closure-object lexical-env body inputs output)
+         closure-object (copied-closure-object lexical-env
+                                               closure-body
+                                               inputs
+                                               closure-output)
          closure-env-id (h/node-id state :closure-env)
          closure-binding (env/compound-binding closure-id)
          state-with-env (assoc state
@@ -227,9 +309,9 @@
                            closure-env-id
                            closure-id
                            locals
-                           body
+                           closure-body
                            inputs
-                           output
+                           closure-output
                            env-slot-prop)
         state')
       closure-binding])))
@@ -426,6 +508,8 @@
                                     :path path
                                     :props []
                                     :applications []
+                                    :application-installer
+                                    (:application-installer opts)
                                     :reuse-existing-bindings?
                                     (:reuse-existing-bindings? opts)})]
      (common/compiled-map state result))))

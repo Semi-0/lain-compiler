@@ -1,0 +1,117 @@
+(ns propagators.compiler-2.lexical-application
+  "Retained closure application selected from a lexical scope cell."
+  (:require [propagators.cells.value :as value]
+            [propagators.compiler-2.application :as application]
+            [propagators.compiler-2.closure-frame :as closure-frame]
+            [propagators.compiler-2.closure-value :as closure-value]
+            [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.topology-effects :as topology-effects]
+            [propagators.datastructures.scope-source :as scope-source]
+            [propagators.gur.flat :as fvm]
+            [propagators.network :as net]
+            [propagators.propagator :as prop]))
+
+(def candidate-scope [:compiler-2 :lexical-closure])
+
+(defn- candidate-key [call-key {:keys [candidate dependencies]}]
+  [call-key
+   (scope-source/source-scope candidate)
+   (scope-source/context-chain candidate)
+   (sort-by pr-str dependencies)])
+
+(defn- candidate-installed? [network key]
+  (boolean
+   (get-in (net/network-dict-entry network fvm/name-bindings-key)
+           [candidate-scope key])))
+
+(defn- private-id [key role]
+  (h/stable-node-id :lexical-closure key role))
+
+(defn- scoped-projector [{:keys [candidate dependencies]}]
+  (prop/primitive-propagator
+   (fn [v]
+     (if (value/unusable? v)
+       value/nothing
+       (scope-source/scope-value
+        (scope-source/source-scope candidate)
+        nil
+        (scope-source/context-chain candidate)
+        (scope-source/unwrap v)
+        dependencies)))))
+
+(defn- p:project-output [scope private-id public-id]
+  ((scoped-projector scope) private-id public-id))
+
+(defn- declare-candidate
+  [network scope key closure arg-ids out-id]
+  (when-let [{:keys [input-ids targets]}
+             (application/closure-call-plan closure arg-ids out-id)]
+    (let [private-closure (private-id key :closure)
+          frame-id (private-id key :env)
+          private-outputs (mapv #(private-id key [:output %])
+                                (range (count targets)))
+          private-targets (mapv (fn [[sym _] private-id] [sym private-id])
+                                targets
+                                private-outputs)
+          frame-env (application/closure-body-env
+                     (closure-value/closure-env closure)
+                     (closure-value/closure-inputs closure)
+                     private-targets
+                     input-ids)
+          prepared (-> network
+                       (h/seed-cell private-closure closure)
+                       (h/seed-cell frame-id frame-env)
+                       (#(reduce h/ensure-cell
+                                 %
+                                 (concat private-outputs
+                                         (map second targets)))))
+          [frame-prop with-frame]
+          ((closure-frame/p:apply-closure private-closure frame-id) prepared)
+          [projection-props compiled]
+          (reduce (fn [[props n] [private-id [_ public-id]]]
+                    (let [[p n'] ((p:project-output scope private-id public-id) n)]
+                      [(conj props p) n']))
+                  [[] with-frame]
+                  (map vector private-outputs targets))]
+      (-> (topology-effects/network-diff
+           network compiled (into [frame-prop] projection-props))
+          (update :effects
+                  #(into [(fvm/bind-name candidate-scope key frame-id)] %))))))
+
+(defn p:apply-lexical-closure
+  "Select a scoped closure and retain its existing compiled closure frame."
+  [closure-id arg-ids out-id]
+  (let [arg-ids (vec arg-ids)
+        call-key [closure-id arg-ids out-id]
+        activate
+        (fn [_ _ network]
+          (let [answer (h/strongest-or-nothing network closure-id)
+                closure (scope-source/unwrap answer)]
+            (cond
+              (value/unusable? answer) []
+              (not (scope-source/scope-value? answer)) []
+              (not (closure-value/closure-info? closure)) []
+              :else
+              (let [input-count (count (closure-value/closure-inputs closure))
+                    input-values (mapv #(h/strongest-or-nothing network %)
+                                       (take input-count arg-ids))
+                    scope (application/application-scope
+                           (into [answer] input-values))
+                    key (some->> scope (candidate-key call-key))]
+                (cond
+                  (nil? scope) []
+                  (candidate-installed? network key) []
+                  :else (or (declare-candidate network
+                                               scope
+                                               key
+                                               closure
+                                               arg-ids
+                                               out-id)
+                            []))))))]
+    (prop/construct-propagator
+     (h/stable-node-id :compiler-2/lexical-closure
+                       call-key
+                       :prop)
+     activate
+     (into [closure-id] arg-ids)
+     [out-id])))

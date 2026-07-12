@@ -6,7 +6,8 @@
   body into a transient activation network, run it, and emit only the declared
   output diff back to the outer network.
   "
-  (:require [propagators.boundary :as boundary]
+  (:require [clojure.set :as set]
+            [propagators.boundary :as boundary]
             [propagators.cells.merge :as cell-merge]
             [propagators.cells.snapshot :refer [pop-inputs]]
             [propagators.cells.value :as value]
@@ -17,9 +18,10 @@
             [propagators.compiler-2.operator-value :as operator-value]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.scope-source :as scope-source]
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]
-            [propagators.message :refer [message]]
+            [propagators.message :as msg :refer [message]]
             [propagators.network :as net]
             [propagators.propagator :as prop]
             [propagators.stdlib.prop :as stdlib-prop]))
@@ -27,6 +29,7 @@
 (def apply-closure-props-key :compiler-2/apply-closure-props)
 (def apply-application-props-key :compiler-2/apply-application-props)
 (def execute-sub-env-props-key :compiler-2/execute-sub-env-props)
+(def application-extra-output-ids-key :compiler-2/application-extra-output-ids)
 
 (defn- inner->outer-boundary-map
   [network]
@@ -113,6 +116,9 @@
 (defn- externalize-output-value
   [v network]
   (cond
+    (scope-source/scope-value? v)
+    (scope-source/map-base v #(externalize-output-value % network))
+
     (closure-value/closure-info? v)
     (externalize-closure-value v network)
 
@@ -141,7 +147,7 @@
     (vector? output) output
     :else []))
 
-(defn- body-env
+(defn closure-body-env
   [lexical-env inputs output-targets input-ids]
   (let [base-env (reduce (fn [scoped-env [sym id]]
                            (if sym
@@ -162,6 +168,29 @@
    body-env
    state))
 
+(defn prepare-closure-frame
+  "Compile a closure body against an already-bound frame environment.
+
+  Returns declaration data only; callers choose transient execution or an
+  outer-network topology diff."
+  [network closure-info frame-env compile-state]
+  (let [[state result]
+        (compile-body (closure-value/closure-body closure-info)
+                      frame-env
+                      (merge {:net network
+                              :env frame-env
+                              :seed [:compiler-2/apply-closure
+                                     (closure-value/closure-scope closure-info)]
+                              :path []
+                              :props []
+                              :applications []}
+                             compile-state))]
+    {:state state
+     :net (:net state)
+     :props (:props state)
+     :result result
+     :result-id (env/binding-id result)}))
+
 (defn- install-output-adapter
   [n result-id out-inner]
   (if (and result-id (not= result-id out-inner))
@@ -174,6 +203,17 @@
   (if (= 1 (count output-inners))
     (install-output-adapter n result-id (first output-inners))
     [n []]))
+
+(defn- application-extra-output-ids
+  [network]
+  (vec (get (net/net-dict-or-empty network)
+            application-extra-output-ids-key
+            #{})))
+
+(defn- application-external-output-ids
+  [network output-ids]
+  (vec (distinct (concat output-ids
+                         (application-extra-output-ids network)))))
 
 (defn- output-inners-ready?
   [network output-inners]
@@ -189,21 +229,33 @@
     (net/network-cell-content network id)
     value/nothing))
 
+(defn- external-output-candidate-ids
+  [network ext]
+  (vec (distinct
+        (keep identity
+              [(net/lookup-inner-out network ext)
+               (when (contains? (net/net-env network) ext)
+                 ext)]))))
+
+(defn- externalized-output-message
+  [network-from network-to ext]
+  (let [outer-content (cell-content-or-nothing network-to ext)
+        outer-value (if (value/unusable? outer-content)
+                      (h/strongest-or-nothing network-to ext)
+                      outer-content)]
+    (some (fn [candidate-id]
+            (let [output-value (externalized-cell-value network-from candidate-id)]
+              (when (and (not (value/unusable? output-value))
+                         (cell-merge/cell-updated? output-value
+                                                   outer-value
+                                                   network-to))
+                (message ext output-value))))
+          (external-output-candidate-ids network-from ext))))
+
 (defn- externalized-output-messages
   [network-from network-to external-outputs]
   (keep identity
-        (map (fn [ext]
-                 (when-let [int-id (net/lookup-inner-out network-from ext)]
-                 (let [output-value (externalized-cell-value network-from int-id)
-                       outer-content (cell-content-or-nothing network-to ext)
-                       outer-value (if (value/unusable? outer-content)
-                                     (h/strongest-or-nothing network-to ext)
-                                     outer-content)]
-                   (when (and (not (value/unusable? output-value))
-                              (cell-merge/cell-updated? output-value
-                                                        outer-value
-                                                        network-to))
-                     (message ext output-value)))))
+        (map #(externalized-output-message network-from network-to %)
              (vec external-outputs))))
 
 (defn- run-activation-network
@@ -219,38 +271,36 @@
         output (closure-value/closure-output closure-info)
         lexical-env (closure-value/closure-env closure-info)
         body (closure-value/closure-body closure-info)
-        output-ids (mapv second output-targets)]
+        output-ids (mapv second output-targets)
+        external-output-ids (application-external-output-ids network output-ids)]
     (if (or (value/unusable? lexical-env)
             (value/unusable? body)
             (not= (count inputs) (count arg-ids)))
       network
-      (-> (reduce h/ensure-cell network output-ids)
-          (boundary/create-boundary-outputs output-ids)
+      (-> (reduce h/ensure-cell network external-output-ids)
+          (boundary/create-boundary-outputs external-output-ids)
           (boundary/create-boundary-inputs arg-ids)
           (#(let [inner-inputs (mapv (partial net/lookup-inner-in %) arg-ids)
                   output-inners (mapv (partial net/lookup-inner-out %) output-ids)
-                  activation-env (body-env lexical-env
+                  activation-env (closure-body-env lexical-env
                                            inputs
                                            (mapv (fn [[sym _id] inner-id]
                                                    [sym inner-id])
                                                  output-targets
                                                  output-inners)
                                            inner-inputs)
-                  [state' result] (compile-body
-                                   body
-                                   activation-env
-                                   {:net %
-                                    :env activation-env
-                                    :seed [:compiler-2/apply-closure
-                                           (closure-value/closure-scope closure-info)
-                                           arg-ids
-                                           output-ids]
-                                    :path []
-                                    :props []})
-                  result-id (env/binding-id result)
-                  body-net (run-activation-network (:net state')
+                  prepared (prepare-closure-frame
+                            %
+                            closure-info
+                            activation-env
+                            {:seed [:compiler-2/apply-closure
+                                    (closure-value/closure-scope closure-info)
+                                    arg-ids
+                                    output-ids]})
+                  result-id (:result-id prepared)
+                  body-net (run-activation-network (:net prepared)
                                                    inner-inputs
-                                                   (:props state'))]
+                                                   (:props prepared))]
               (if (output-inners-ready? body-net output-inners)
                 body-net
                 (let [[activation-net adapter-props]
@@ -261,26 +311,34 @@
                                           inner-inputs
                                           adapter-props)))))))))
 
-(defn- closure-call-plan
+(defn closure-call-plan
   [closure-info arg-ids out-id]
   (let [input-count (count (closure-value/closure-inputs closure-info))
         output-syms (output-symbols (closure-value/closure-output closure-info))
         output-count (count output-syms)
-        arg-ids (vec arg-ids)]
-    (if (pos? output-count)
+        arg-ids (vec arg-ids)
+        implicit-return? (closure-value/implicit-return-output?
+                          (closure-value/closure-output closure-info))]
+    (cond
+      (and implicit-return? (= (count arg-ids) input-count))
+      {:input-ids arg-ids
+       :targets [[(first output-syms) out-id]]}
+
+      (pos? output-count)
       (when (= (count arg-ids) (+ input-count output-count))
         {:input-ids (subvec arg-ids 0 input-count)
          :targets (mapv vector
                         output-syms
                         (subvec arg-ids input-count))})
-      (when (= (count arg-ids) input-count)
-        {:input-ids arg-ids
-         :targets [[nil out-id]]}))))
+
+      (= (count arg-ids) input-count)
+      {:input-ids arg-ids
+       :targets [[nil out-id]]})))
 
 (defn closure-application-messages
   [closure-id _args-id scheduled-arg-ids out-id network]
   (let [closure-cv (h/strongest-or-nothing network closure-id)
-        closure-info closure-cv
+        closure-info (scope-source/unwrap closure-cv)
         arg-ids (vec scheduled-arg-ids)]
     (if (or (value/unusable? closure-cv)
             (not (closure-value/closure-info? closure-info)))
@@ -300,7 +358,9 @@
                                              targets)]
             {:messages (externalized-output-messages after-body
                                                      network*
-                                                     output-ids)}))))))
+                                                     (application-external-output-ids
+                                                      network*
+                                                      output-ids))}))))))
 
 (defn p:apply-closure
   "Apply a compiler-2 closure-info cell to argument cells and one output cell."
@@ -329,11 +389,53 @@
     (activate network context-id arg-ids out-id)
     []))
 
-(defn- application-messages
+(defn application-scope
+  "Select one compatible lexical application context and combine provenance."
+  [values]
+  (let [scoped (filterv scope-source/scope-value? values)
+        chains (set (map scope-source/context-chain scoped))]
+    (when (and (seq scoped) (= 1 (count chains)))
+      (let [chain (first chains)
+            rank #(let [i (.lastIndexOf ^java.util.List chain
+                                        (scope-source/source-scope %))]
+                    (if (neg? i) -1 i))
+            candidate (apply max-key rank scoped)]
+        {:candidate candidate
+         :dependencies (apply set/union
+                              (map scope-source/dependencies scoped))}))))
+
+(defn- scope-message
+  [{:keys [candidate dependencies]} m]
+  (message (msg/message-id m)
+           (scope-source/scope-value
+            (scope-source/source-scope candidate)
+            nil
+            (scope-source/context-chain candidate)
+            (msg/message-value m)
+            dependencies)))
+
+(defn- scope-activation-result
+  [scope result]
+  (if-not scope
+    result
+    (cond
+      (map? result) (update result :messages
+                            #(mapv (partial scope-message scope) (or % [])))
+      (sequential? result) (mapv (partial scope-message scope) result)
+      :else result)))
+
+(defn application-messages
   [application-id operator-id args-id scheduled-arg-ids context-id out-id network]
   (let [application-info (h/strongest-or-nothing network application-id)
-        operator (h/strongest-or-nothing network operator-id)]
-    (cond
+        operator-answer (h/strongest-or-nothing network operator-id)
+        operator (scope-source/unwrap operator-answer)
+        scope-arg-ids (if (closure-value/closure-info? operator)
+                        (take (count (closure-value/closure-inputs operator))
+                              scheduled-arg-ids)
+                        scheduled-arg-ids)
+        argument-values (mapv #(h/strongest-or-nothing network %) scope-arg-ids)
+        scope (application-scope (into [operator-answer] argument-values))
+        result (cond
       (value/unusable? application-info)
       []
 
@@ -362,7 +464,8 @@
                                     args-id
                                     scheduled-arg-ids
                                     out-id
-                                    network))))
+                                    network))]
+    (scope-activation-result scope result)))
 
 (defn p:apply-application
   "Evaluate one retained compiler-2 application object.

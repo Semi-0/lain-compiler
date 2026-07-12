@@ -4,6 +4,7 @@
             [propagators.cells.value :as value]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.topology-effects :as topology-effects]
             [propagators.gur.flat :as fvm]
             [propagators.message :refer [message]]
             [propagators.network :as net]
@@ -91,12 +92,10 @@
   [base-network captured-state body marker-effect]
   (let [compiled-state (compile-body-state base-network captured-state body)
         compiled-network (:net compiled-state)]
-    {:effects (into [marker-effect]
-                    (concat (new-cell-effects base-network compiled-network)
-                            (prop-effects base-network
-                                          compiled-network
-                                          (:props compiled-state))))
-     :messages (changed-cell-messages base-network compiled-network)}))
+    (-> (topology-effects/network-diff base-network
+                                       compiled-network
+                                       (:props compiled-state))
+        (update :effects #(into [marker-effect] %)))))
 
 (defn install-when-topology
   [state condition-id body]

@@ -697,6 +697,7 @@
        (env/bind-at '>= (operator-builder core/>=) 0)
        (env/bind-at '= (operator-builder core/=) 0)
        (env/bind-at 'not (operator-builder core/not) 0)
+       (env/bind-at 'str (operator-builder core/str) 0)
        (env/bind-at 'switch (switch-operator) 0)
        (env/bind-at 'if (if-operator) 0)
        (env/bind-at 'branch (branch-operator) 0)
