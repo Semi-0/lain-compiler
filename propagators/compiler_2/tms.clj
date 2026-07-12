@@ -9,7 +9,8 @@
             [propagators.datastructures.scope-source :as scope-source]
             [propagators.datastructures.tms.distributed :as tms]
             [propagators.message :refer [message message-id message-value]]
-            [propagators.network :as net]))
+            [propagators.network :as net]
+            [propagators.propagator :as prop]))
 
 (defn- unwrap-compiler-value
   [v]
@@ -143,6 +144,59 @@
          result
          (cond-> [premise-claim]
            (tms/distributed-value? output-update) (conj output-update)))))))
+
+(defn- cell-update-or-nil
+  [network id]
+  (let [content (when (contains? (net/net-env network) id)
+                  (net/network-cell-content network id))
+        strongest (h/strongest-or-nothing network id)]
+    (cond
+      (and (some? content)
+           (not (value/unusable? content))) content
+      (not (value/unusable? strongest)) strongest
+      :else nil)))
+
+(defn distributed-premise-output-messages
+  [claim-id source input-ids premise epoch private-output-id real-output-id network]
+  (let [premise (unwrap-compiler-value premise)
+        epoch (unwrap-compiler-value epoch)
+        output-update (cell-update-or-nil network private-output-id)]
+    (if (or (value/unusable? premise)
+            (value/unusable? epoch))
+      []
+      (let [update (distributed-premise-output-update
+                    claim-id
+                    source
+                    output-update
+                    (mapv #(net/network-cell-content network %) input-ids)
+                    premise
+                    epoch)]
+        (cond-> []
+          update (conj (message real-output-id update)))))))
+
+(defn p:distributed-premise-output
+  "Project a retained closure private output into a premise-supported TMS output."
+  [claim-id source input-ids premise epoch private-output-id real-output-id]
+  (let [input-ids (vec input-ids)
+        inputs (conj input-ids private-output-id)
+        activate (fn [_inputs _outputs network]
+                   (distributed-premise-output-messages
+                    claim-id
+                    source
+                    input-ids
+                    premise
+                    epoch
+                    private-output-id
+                    real-output-id
+                    network))]
+    (prop/construct-propagator
+     (h/stable-node-id :compiler-2/distributed-premise-output
+                       claim-id
+                       private-output-id
+                       real-output-id)
+     activate
+     inputs
+     [real-output-id])))
 
 (defn- distributed-premise-closure-call-messages
   [closure-id closure-info premise epoch network arg-ids out-id]

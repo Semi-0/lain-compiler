@@ -14,6 +14,7 @@
             [propagators.compiler-2.lazy-topology :as lazy-topology]
             [propagators.compiler-2.operator-value :as operator-value]
             [propagators.compiler-2.parser :as parser]
+            [propagators.compiler-2.retained-application :as retained-application]
             [propagators.compiler-common.core :as common]
             [propagators.datastructures.compound-object :as obj]
             [propagators.ids :as ids]
@@ -31,7 +32,7 @@
   [state app-id operator-ast operator-id result-id context-id]
   (common/install-application-propagator state
                                          (or (:application-installer state)
-                                             compiler-app/p:apply-application)
+                                             retained-application/p:apply-application)
                                          app-id
                                          operator-ast
                                          operator-id
@@ -109,12 +110,20 @@
 
 (defn- normalize-closure-output
   [state output body]
-  (if (nil? output)
-    (let [return-sym (hidden-return-symbol state)]
-      {:output [return-sym]
-       :body (route-body-result body return-sym)})
-    {:output output
-     :body body}))
+  (let [outputs (closure-output-symbols output)]
+    (cond
+      (nil? output)
+      (let [return-sym (hidden-return-symbol state)]
+        {:output [return-sym]
+         :body (route-body-result body return-sym)})
+
+      (= 1 (count outputs))
+      {:output output
+       :body (route-body-result body (first outputs))}
+
+      :else
+      {:output output
+       :body body})))
 
 (defn- known-closure-info
   [network id]

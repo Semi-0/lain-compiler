@@ -12,6 +12,7 @@
             [propagators.propagator :as prop]))
 
 (def candidate-scope [:compiler-2 :lexical-closure])
+(def raw-scope [:compiler-2 :selected-closure])
 
 (defn- candidate-key [call-key {:keys [candidate dependencies]}]
   [call-key
@@ -23,6 +24,11 @@
   (boolean
    (get-in (net/network-dict-entry network fvm/name-bindings-key)
            [candidate-scope key])))
+
+(defn- raw-installed? [network key]
+  (boolean
+   (get-in (net/network-dict-entry network fvm/name-bindings-key)
+           [raw-scope key])))
 
 (defn- private-id [key role]
   (h/stable-node-id :lexical-closure key role))
@@ -41,6 +47,29 @@
 
 (defn- p:project-output [scope private-id public-id]
   ((scoped-projector scope) private-id public-id))
+
+(defn- declare-raw-closure
+  [network key closure arg-ids out-id]
+  (when-let [{:keys [input-ids targets]}
+             (application/closure-call-plan closure arg-ids out-id)]
+    (let [frame-id (private-id key :env)
+          frame-env (application/closure-body-env
+                     (closure-value/closure-env closure)
+                     (closure-value/closure-inputs closure)
+                     targets
+                     input-ids)
+          prepared-network (h/seed-cell network frame-id frame-env)
+          prepared (application/prepare-closure-frame
+                    prepared-network
+                    closure
+                    frame-env
+                    {:seed [:compiler-2/selected-closure key]
+                     :closure-frame-mode? true})]
+      (-> (topology-effects/network-diff network
+                                         (:net prepared)
+                                         (:props prepared))
+          (update :effects
+                  #(into [(fvm/bind-name raw-scope key frame-id)] %))))))
 
 (defn- declare-candidate
   [network scope key closure arg-ids out-id]
@@ -89,7 +118,21 @@
                 closure (scope-source/unwrap answer)]
             (cond
               (value/unusable? answer) []
+
+              (and (not (scope-source/scope-value? answer))
+                   (closure-value/closure-info? closure))
+              (let [key [call-key :raw]]
+                (if (raw-installed? network key)
+                  []
+                  (or (declare-raw-closure network
+                                           key
+                                           closure
+                                           arg-ids
+                                           out-id)
+                      [])))
+
               (not (scope-source/scope-value? answer)) []
+
               (not (closure-value/closure-info? closure)) []
               :else
               (let [input-count (count (closure-value/closure-inputs closure))

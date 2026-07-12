@@ -9,9 +9,11 @@
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as helpers]
             [propagators.compiler-2.main :as main]
+            [propagators.compiler-2.tms :as compiler-tms]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.scope-source :as scope-source]
+            [propagators.datastructures.tms.distributed :as tms]
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
@@ -50,6 +52,11 @@
       (compile/install-and-run (protocol/install-cell-protocol))
       (compile/install-and-run (protocol/install-scope-source-protocol))))
 
+(defn- tms-protocol-net []
+  (-> net/empty-net
+      (compile/install-and-run (protocol/install-cell-protocol))
+      (compile/install-and-run (protocol/install-tms-distributed-protocol))))
+
 (defn- chain-value [depth]
   (reduce (fn [rest n]
             (obj/as-accessor-network
@@ -83,6 +90,16 @@
 (defn- prop-count [network]
   (count (filter (comp prop/prop? val)
                  (net/net-env network))))
+
+(defn- distributed-current-value [network id]
+  (let [v (net/network-cell-strongest network id)]
+    (if (value/unusable? v)
+      v
+      (tms/distributed-base-value v))))
+
+(defn- distributed-slot-keys [network id]
+  (set (keys (tms/distributed-slots
+              (net/network-cell-content network id)))))
 
 (defn- run-props [network props]
   (core/run-tasks (tq/enqueue-all tq/empty-queue props) network))
@@ -231,6 +248,47 @@
     (is (= 15 (net/network-cell-strongest after-x out-id)))
     (is (= topology-cells (count (net/net-env after-x))))
     (is (= topology-props (prop-count after-x)))))
+
+(deftest retained-frame-projects-tms-provenance-to-output
+  (let [compiled (main/compile-source
+                  "(network [x] [out] (-> (+ x 1) out))"
+                  (helpers/default-env)
+                  {:net (tms-protocol-net)})
+        declared (run-props (:net compiled) (:props compiled))
+        closure-id (:cell compiled)
+        closure (net/network-cell-strongest declared closure-id)
+        x-id (ids/new-node-id)
+        private-out-id (ids/new-node-id)
+        real-out-id (ids/new-node-id)
+        env-id (ids/new-node-id)
+        {:keys [input-ids targets]}
+        (application/closure-call-plan closure [x-id private-out-id] real-out-id)
+        frame-env (application/closure-body-env
+                   (closure-value/closure-env closure)
+                   (closure-value/closure-inputs closure)
+                   targets
+                   input-ids)
+        n0 (-> declared
+               (nb/install-cell x-id 5 5)
+               (nb/install-cell private-out-id)
+               (nb/install-cell real-out-id)
+               (nb/install-cell env-id frame-env frame-env))
+        [root-prop n1] ((frame/p:apply-closure closure-id env-id) n0)
+        [project-prop n2]
+        ((compiler-tms/p:distributed-premise-output
+          [:test/retained-tms real-out-id]
+          [:test/retained-tms real-out-id]
+          [x-id]
+          :premise/definition
+          0
+          private-out-id
+          real-out-id)
+         n1)
+        result (run-props n2 [root-prop project-prop])]
+    (is (= 6 (net/network-cell-strongest result private-out-id)))
+    (is (= 6 (distributed-current-value result real-out-id)))
+    (is (contains? (distributed-slot-keys result real-out-id)
+                   (tms/premise-slot-key :premise/definition 0)))))
 
 (deftest delayed-tail-grows-only-the-missing-closure-frame-suffix
   (let [compiled (main/compile-source map-chain-source)
