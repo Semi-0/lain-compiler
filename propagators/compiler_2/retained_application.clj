@@ -99,7 +99,8 @@
         inputs (into [application-id operator-id args-id context-id] arg-ids)]
     (fn [network]
       (let [network* (reduce h/ensure-cell network (conj inputs out-id))
-            [prop-id n] ((prop/construct-propagator activate inputs [out-id])
+            [prop-id n] ((prop/construct-propagator :compiler-2/retained-application
+                                                    activate inputs [out-id])
                          network*)]
         [prop-id
          (net/update-net-dict-entry n

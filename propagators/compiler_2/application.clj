@@ -375,7 +375,8 @@
         inputs (into [closure-id args-id] arg-ids)]
     (fn [network]
       (let [network* (reduce h/ensure-cell network (conj inputs out-id))
-            [prop-id n] ((prop/construct-propagator activate inputs [out-id])
+            [prop-id n] ((prop/construct-propagator :compiler-2/apply-closure
+                                                    activate inputs [out-id])
                          network*)]
         [prop-id
          (net/update-net-dict-entry n
@@ -486,7 +487,8 @@
         inputs (into [application-id operator-id args-id context-id] arg-ids)]
     (fn [network]
       (let [network* (reduce h/ensure-cell network (conj inputs out-id))
-            [prop-id n] ((prop/construct-propagator activate inputs [out-id])
+            [prop-id n] ((prop/construct-propagator :compiler-2/apply-application
+                                                    activate inputs [out-id])
                          network*)]
         [prop-id
          (net/update-net-dict-entry n
@@ -577,7 +579,8 @@
                                               network))]
      (fn [network]
        (let [network* (reduce h/ensure-cell network (into inputs outputs))
-             [prop-id n] ((prop/construct-propagator activate inputs outputs)
+             [prop-id n] ((prop/construct-propagator :compiler-2/execute-sub-env
+                                                     activate inputs outputs)
                           network*)]
          [prop-id
           (net/update-net-dict-entry n

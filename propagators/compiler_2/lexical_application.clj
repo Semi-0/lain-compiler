@@ -155,6 +155,7 @@
      (h/stable-node-id :compiler-2/lexical-closure
                        call-key
                        :prop)
+     :compiler-2/lexical-closure
      activate
      (into [closure-id] arg-ids)
      [out-id])))

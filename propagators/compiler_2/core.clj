@@ -39,6 +39,21 @@
                                          result-id
                                          context-id))
 
+(defn- install-known-operator
+  [state install app-id operator-ast operator-id arg-ids result-id context-id]
+  (let [[network prop-ids installed-out-id]
+        (install (:net state) arg-ids result-id)
+        state' (-> state
+                   (assoc :net network)
+                   (h/add-props prop-ids))]
+    [(common/record-application-ir state'
+                                   app-id
+                                   operator-ast
+                                   operator-id
+                                   installed-out-id
+                                   context-id)
+     (env/cell-binding installed-out-id)]))
+
 (defmulti g:advance
   (fn [_binding _state] :default))
 
@@ -72,18 +87,30 @@
             [state''' operator-binding'] (common/install-operator-object state''
                                                                          operator-binding)
             operator-id (env/binding-id operator-binding')
-            result-id (h/output-id operator-binding arg-ids out-id)]
-        [(-> state'''
-             (assoc :application/args-id args-id
-                    :application/arg-ids arg-ids
-                    :application/lowering :primitive)
-             (install-application-propagator
-              app-id
-              operator-ast
-              operator-id
-              result-id
-              context-id))
-         (env/cell-binding result-id)]))))
+            result-id (h/output-id operator-binding arg-ids out-id)
+            prepared (assoc state'''
+                            :application/args-id args-id
+                            :application/arg-ids arg-ids
+                            :application/lowering :primitive)
+            install (and (operator-value/operator-closure? operator-binding)
+                         (not (operator-value/operator-contextual? operator-binding))
+                         (operator-value/operator-static-installer operator-binding))]
+        (if install
+          (install-known-operator prepared
+                                  install
+                                  app-id
+                                  operator-ast
+                                  operator-id
+                                  arg-ids
+                                  result-id
+                                  context-id)
+          [(install-application-propagator prepared
+                                           app-id
+                                           operator-ast
+                                           operator-id
+                                           result-id
+                                           context-id)
+           (env/cell-binding result-id)])))))
 
 (defn- closure-output-symbols
   [output]
