@@ -4,7 +4,10 @@ Source files:
 
 - `propagators/compiler_2/parser.clj`
 - `propagators/compiler_2/ast.clj`
-- `propagators/compiler_2/core.clj`
+- `propagators/compiler_2/compiler/cps.clj`
+- `propagators/compiler_2/compiler/handlers.clj`
+- `propagators/compiler_2/compiler/predicates.clj`
+- `propagators/compiler_2/compiler/declarations.clj`
 - `propagators/compiler_2/application.clj`
 - `propagators/compiler_2/closure_value.clj`
 - `propagators/compiler_2/context.clj`
@@ -306,15 +309,16 @@ compile*  [state expr] -> [state binding]
 `propagators.compiler-common.cps/on` turns a predicate and CPS handler into a
 rule that delegates non-matches. `compose-rules` builds the rule chain and
 `make-compiler` drives it with Clojure's `trampoline`.
-`propagators.compiler-2.cps-core/compiler-dispatch` is the production rule
-composition. `predicate-core` remains available as the synchronous comparison
-implementation. A local CPS variant can prepend another `on` rule without
+`propagators.compiler-2.compiler.cps/compiler-dispatch` is the production rule
+composition. Its predicates, handlers, and declaration primitives live in
+separate namespaces under `compiler-2.compiler`. A local CPS variant can
+prepend another `on` rule without
 adding or replacing a global `defmethod`, then pass the resulting compiler as
 `:compiler` to `compile-expr`.
 
-`propagators.compiler-2.core/g:compile`, `g:apply`, and `g:advance` remain
-compatibility exports. They are not used to select expressions on the normal
-CPS compilation path.
+`propagators.compiler-2.core`, `cps-core`, and `predicate-core` are deprecated
+compatibility façades. `core/g:compile`, `g:apply`, and `g:advance` retain their
+public identities, but none selects expressions on the production CPS path.
 
 The environment has one internal authority: `:env` in compiler state. The
 three-argument `g:compile` methods remain compatibility adapters and copy their

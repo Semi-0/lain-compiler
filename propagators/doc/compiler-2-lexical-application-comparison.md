@@ -2,7 +2,7 @@
 
 ## Current boundary
 
-`compiler-2.core` now defaults application installation to:
+`compiler-2.compiler.declarations` now defaults application installation to:
 
 ```clojure
 propagators.compiler-2.retained-application/p:apply-application

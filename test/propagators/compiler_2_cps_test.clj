@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [propagators.compiler-2.application :as application]
             [propagators.compiler-2.ast :as ast]
-            [propagators.compiler-2.cps-core :as compiler]
+            [propagators.compiler-2.compiler.cps :as compiler]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
             [propagators.compiler-2.operator-value :as operator-value]

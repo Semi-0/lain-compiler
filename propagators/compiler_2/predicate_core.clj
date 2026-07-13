@@ -1,108 +1,57 @@
-(ns propagators.compiler-2.predicate-core
-  "Predicate-composed compiler-2 entrypoint with no generic dispatch.
-
-  Declaration primitives still live beside the compatibility MultiFns in
-  `compiler-2.core`; this namespace owns recursive selection and the active
-  compile entrypoints."
+(ns ^:deprecated propagators.compiler-2.predicate-core
+  "Deprecated synchronous compiler shim; production uses `compiler-2.compiler.cps`."
   (:refer-clojure :exclude [symbol?])
   (:require [propagators.compiler-2.application :as application]
+            [propagators.compiler-2.compiler.predicates :as predicates]
             [propagators.compiler-2.core :as core]
+            [propagators.compiler-2.deprecated.synchronous :as synchronous]
             [propagators.compiler-2.helpers :as h]
-            [propagators.compiler-2.parser :as parser]
-            [propagators.compiler-common.core :as common]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.propagator :as prop]))
 
-(def compiler-result-key common/compiler-result-key)
-(def compiler-props-key common/compiler-props-key)
-(def compiler-applications-key common/compiler-applications-key)
+(def compiler-result-key core/compiler-result-key)
+(def compiler-props-key core/compiler-props-key)
+(def compiler-applications-key core/compiler-applications-key)
 
-(defn- kind? [kind expr]
-  (= kind (common/expression-kind expr)))
+(def literal? predicates/literal?)
+(def symbol? predicates/symbol?)
+(def sequence? predicates/sequence?)
+(def let-cell? predicates/let-cell?)
+(def let? predicates/let?)
+(def when-topology? predicates/when-topology?)
+(def network? predicates/network?)
+(def compound? predicates/compound?)
+(def def-net? predicates/def-net?)
+(def def-constraint? predicates/def-constraint?)
+(def definition? predicates/definition?)
+(def def-cell? predicates/def-cell?)
 
-(def literal? (partial kind? :literal))
-(def symbol? (partial kind? :symbol))
-(def sequence? (partial kind? :sequence))
-(def let-cell? (partial kind? :let-cell))
-(def let? (partial kind? :let))
-(def when-topology? (partial kind? :when-topology))
-(def network? (partial kind? :network))
-(def compound? (partial kind? :compound))
-(def def-net? (partial kind? :def-net))
-(def def-constraint? (partial kind? :def-constraint))
-(def definition? (partial kind? :def))
-(def def-cell? (partial kind? :def-cell))
+(def compile-literal synchronous/compile-literal)
+(def compile-symbol synchronous/compile-symbol)
+(def compile-sequence synchronous/compile-sequence)
+(def compile-let-cell synchronous/compile-let-cell)
+(def compile-let synchronous/compile-let)
+(def compile-when-topology synchronous/compile-when-topology)
+(def compile-network-form synchronous/compile-network-form)
+(def compile-compound synchronous/compile-compound)
+(def compile-def-net synchronous/compile-def-net)
+(def compile-def-constraint synchronous/compile-def-constraint)
+(def compile-def synchronous/compile-def)
+(def compile-def-cell synchronous/compile-def-cell)
+(def compile-application core/compile-application)
 
-(defn advance-binding
-  [binding _state]
-  binding)
+(defn advance-binding [binding _state] binding)
 
-(def compile-application
-  (common/application-handler advance-binding core/apply-operator))
-
-(def compiler-dispatch
-  (common/compose-rules
-   (common/on literal? core/compile-literal)
-   (common/on symbol? core/compile-symbol)
-   (common/on sequence? core/compile-sequence)
-   (common/on let-cell? core/compile-let-cell)
-   (common/on let? core/compile-let)
-   (common/on when-topology? core/compile-when-topology)
-   (common/on network? core/compile-network-form)
-   (common/on compound? core/compile-compound)
-   (common/on def-net? core/compile-def-net)
-   (common/on def-constraint? core/compile-def-constraint)
-   (common/on definition? core/compile-def)
-   (common/on def-cell? core/compile-def-cell)
-   compile-application))
-
-(def compile*
-  (common/make-compiler compiler-dispatch))
-
-(def default-compiler compile*)
-
-(defn compile-expr
-  "Compile AST data through predicate rules only."
-  ([expr] (compile-expr expr (h/default-env)))
-  ([expr compiler-env] (compile-expr expr compiler-env {}))
-  ([expr compiler-env {:keys [net seed path compiler]
-                       :or {net net/empty-net path []}
-                       :as opts}]
-   (let [seed (or seed (ids/new-node-id))
-         compile* (or compiler default-compiler)
-         [state result]
-         (compile* {:net net
-                    :env compiler-env
-                    :seed seed
-                    :path path
-                    :props []
-                    :applications []
-                    :compiler compile*
-                    :application-installer (:application-installer opts)
-                    :application/cell-declarer
-                    (:application/cell-declarer opts)
-                    :reuse-existing-bindings?
-                    (:reuse-existing-bindings? opts)}
-                   expr)]
-     (common/compiled-map state result))))
-
-(defn compile-source
-  ([source] (compile-expr (parser/parse-string source)))
-  ([source compiler-env]
-   (compile-expr (parser/parse-string source) compiler-env))
-  ([source compiler-env opts]
-   (compile-expr (parser/parse-string source) compiler-env opts)))
-
-(defn compiled-result [compiled-net]
-  (net/network-dict-entry compiled-net compiler-result-key))
-
-(defn compiled-props [compiled-net]
-  (net/network-dict-entry compiled-net compiler-props-key))
-
-(defn compiled-applications [compiled-net]
-  (net/network-dict-entry compiled-net compiler-applications-key))
+(def compiler-dispatch core/compiler-dispatch)
+(def compile* core/default-compiler)
+(def ^:deprecated default-compiler compile*)
+(def compile-expr core/compile-expr)
+(def compile-source core/compile-source)
+(def compiled-result core/compiled-result)
+(def compiled-props core/compiled-props)
+(def compiled-applications core/compiled-applications)
 
 (defn p:compile-expr-with
   [compile* expr-id env-id out-id]
@@ -111,10 +60,10 @@
     (fn [_inputs _outputs network]
       (let [expr (net/network-cell-strongest network expr-id)
             compiler-env (net/network-cell-strongest network env-id)
-            compiled (compile-expr expr compiler-env
-                                   {:net network
-                                    :seed [:compile-2 expr-id env-id]
-                                    :compiler compile*})]
+            compiled (core/compile-expr expr compiler-env
+                                        {:net network
+                                         :seed [:compile-2 expr-id env-id]
+                                         :compiler compile*})]
         [(message out-id (:net compiled))])))
    [expr-id env-id]
    [out-id]))
@@ -130,8 +79,5 @@
    (p:execute-sub-env parent-env-id expr-id [] child-env-id out-id))
   ([parent-env-id expr-id watch-ids child-env-id out-id]
    (application/p:execute-sub-env-with default-compiler
-                                       parent-env-id
-                                       expr-id
-                                       watch-ids
-                                       child-env-id
-                                       out-id)))
+                                       parent-env-id expr-id watch-ids
+                                       child-env-id out-id)))
