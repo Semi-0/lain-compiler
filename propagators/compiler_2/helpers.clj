@@ -5,6 +5,7 @@
             [clojure.set :as set]
             [propagators.cells.value :as value]
             [propagators.compiler-2.context :as context]
+            [propagators.compiler-2.dispatch :as compiler-dispatch]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.operator-value :as operator-value]
             [propagators.datastructures.compound-object :as obj]
@@ -114,16 +115,66 @@
 
 (defn- compile-direct-form
   [state form role]
-  (let [compile* (requiring-resolve 'propagators.compiler-2.core/g:compile)
-        [state' binding] (compile* form
-                                   (:env state)
-                                   (child state role))]
+  (let [compile* (compiler-dispatch/state-compiler state)
+        [state' binding] (compile* (child state role) form)]
     [(assoc state' :path (:path state)) binding]))
+
+(defn declare-list
+  [state element-bindings out-id]
+  (let [element-ids (mapv env/binding-id element-bindings)]
+    (when-not (every? some? element-ids)
+      (throw (ex-info "list elements must compile to cells"
+                      {:bindings element-bindings})))
+    (let [[state' empty-binding] (new-cell state :list-empty list-empty-marker)
+          empty-id (env/binding-id empty-binding)
+          [state'' cons-ids]
+          (reduce
+           (fn [[state ids] idx]
+             (if (zero? idx)
+               [state (conj ids out-id)]
+               (let [[state' binding] (new-cell state [:list-cons idx])]
+                 [state' (conj ids (env/binding-id binding))])))
+           [state' []]
+           (range (count element-ids)))
+          tail-ids (conj (vec (rest cons-ids)) empty-id)
+          [installed-prop-ids network']
+          (reduce
+           (fn [[acc-prop-ids network] [head-id tail-id collection-id]]
+             (let [network (reduce ensure-cell network
+                                   [head-id tail-id collection-id])
+                   [ids network'] ((obj/p:cons head-id tail-id collection-id)
+                                   network)]
+               [(into acc-prop-ids (prop-ids ids)) network']))
+           [[] (:net state'')]
+           (map vector element-ids tail-ids cons-ids))]
+      [(-> state''
+           (assoc :net network')
+           (add-props installed-prop-ids))
+       (env/cell-binding out-id)])))
+
+(defn- compile-list-k
+  [compile-k state operand-forms out-id k]
+  (let [base-path (:path state)
+        forms (vec operand-forms)]
+    (letfn [(step [state idx bindings]
+              (if (= idx (count forms))
+                (let [[state' binding] (declare-list state bindings out-id)]
+                  #(k state' binding))
+                (fn []
+                  (compile-k
+                   (child state [:list-element idx])
+                   (nth forms idx)
+                   (fn [state' binding]
+                     #(step (assoc state' :path base-path)
+                            (inc idx)
+                            (conj bindings binding)))))))]
+      (step state 0 []))))
 
 (defn list-operator
   []
   (operator-value/operator-closure
    {:name 'list
+    :direct-compiler compile-list-k
     :direct-installer
     (fn [state operand-forms out-id]
       (let [[state' element-bindings]
@@ -134,42 +185,8 @@
                                                            [:list-element idx])]
                  [state' (conj acc binding)]))
              [state []]
-             (map-indexed vector operand-forms))
-            element-ids (mapv env/binding-id element-bindings)]
-        (when-not (every? some? element-ids)
-          (throw (ex-info "list elements must compile to cells"
-                          {:bindings element-bindings})))
-        (let [[state'' empty-binding] (new-cell state'
-                                                :list-empty
-                                                list-empty-marker)
-              empty-id (env/binding-id empty-binding)
-              [state''' cons-ids]
-              (reduce
-               (fn [[state ids] idx]
-                 (if (zero? idx)
-                   [state (conj ids out-id)]
-                   (let [[state' binding] (new-cell state [:list-cons idx])]
-                     [state' (conj ids (env/binding-id binding))])))
-               [state'' []]
-               (range (count element-ids)))
-              tail-ids (conj (vec (rest cons-ids)) empty-id)
-              [installed-prop-ids network']
-              (reduce
-               (fn [[acc-prop-ids network] [head-id tail-id collection-id]]
-                 (let [network (reduce ensure-cell
-                                       network
-                                       [head-id tail-id collection-id])
-                       [ids network'] ((obj/p:cons head-id
-                                                   tail-id
-                                                   collection-id)
-                                       network)]
-                   [(into acc-prop-ids (prop-ids ids)) network']))
-               [[] (:net state''')]
-               (map vector element-ids tail-ids cons-ids))]
-          [(-> state'''
-               (assoc :net network')
-               (add-props installed-prop-ids))
-           (env/cell-binding out-id)])))}))
+             (map-indexed vector operand-forms))]
+        (declare-list state' element-bindings out-id)))}))
 
 (defn- accessor-operator
   [slot-key installer name]
@@ -427,6 +444,18 @@
 (defn execute-sub-env-operator []
   (operator-value/operator-closure
    {:name 'execute-sub-env
+    :compiler-activate
+    (fn [compile* network _context-id arg-ids out-id]
+      (let [[expr-id parent-env-id & watch-ids] (vec arg-ids)
+            child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)]
+        ((requiring-resolve
+          'propagators.compiler-2.application/execute-sub-env-messages-with)
+         compile*
+         parent-env-id
+         expr-id
+         child-env-id
+         out-id
+         network)))
     :install (fn [network arg-ids out-id]
                (let [[expr-id parent-env-id & watch-ids] (vec arg-ids)
                      child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)]

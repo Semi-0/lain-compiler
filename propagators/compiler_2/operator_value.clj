@@ -17,15 +17,17 @@
 (def input-selector-slot :operator/input-selector)
 (def install-slot :operator/install)
 (def static-installer-slot :operator/static-installer)
+(def compiler-activate-slot :operator/compiler-activate)
 (def direct-installer-slot :operator/direct-installer)
+(def direct-compiler-slot :operator/direct-compiler)
 (def activate-slot :operator/activate)
 (def output-selector-slot :operator/output-selector)
 (def contextual?-slot :operator/contextual?)
 (def name-slot :operator/name)
 
 (defn operator-closure
-  [{:keys [input-selector install static-installer direct-installer
-           activate output-selector contextual? name]}]
+  [{:keys [input-selector install static-installer direct-installer direct-compiler
+           activate compiler-activate output-selector contextual? name]}]
   (obj/compound-object
    (cond-> {kind-slot operator-kind
             activate-slot activate
@@ -34,6 +36,8 @@
      install (assoc install-slot install)
      static-installer (assoc static-installer-slot static-installer)
      direct-installer (assoc direct-installer-slot direct-installer)
+     direct-compiler (assoc direct-compiler-slot direct-compiler)
+     compiler-activate (assoc compiler-activate-slot compiler-activate)
      output-selector (assoc output-selector-slot output-selector)
      name (assoc name-slot name))))
 
@@ -49,8 +53,14 @@
 (defn operator-static-installer [operator]
   (obj/slot-value operator static-installer-slot))
 
+(defn operator-compiler-activate [operator]
+  (obj/slot-value operator compiler-activate-slot))
+
 (defn operator-direct-installer [operator]
   (obj/slot-value operator direct-installer-slot))
+
+(defn operator-direct-compiler [operator]
+  (obj/slot-value operator direct-compiler-slot))
 
 (defn operator-activate [operator]
   (obj/slot-value operator activate-slot))

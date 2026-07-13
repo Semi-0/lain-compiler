@@ -13,6 +13,7 @@
             [propagators.cells.value :as value]
             [propagators.compiler-2.application-value :as application-value]
             [propagators.compiler-2.closure-value :as closure-value]
+            [propagators.compiler-2.dispatch :as dispatch]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
             [propagators.compiler-2.operator-value :as operator-value]
@@ -162,34 +163,36 @@
      (map vector inputs input-ids))))
 
 (defn- compile-body
-  [body body-env state]
-  ((requiring-resolve 'propagators.compiler-2.core/g:compile)
-   body
-   body-env
-   state))
+  [compile* body body-env state]
+  (compile* (assoc state :env body-env :compiler compile*) body))
 
 (defn prepare-closure-frame
   "Compile a closure body against an already-bound frame environment.
 
   Returns declaration data only; callers choose transient execution or an
   outer-network topology diff."
-  [network closure-info frame-env compile-state]
-  (let [[state result]
-        (compile-body (closure-value/closure-body closure-info)
-                      frame-env
-                      (merge {:net network
-                              :env frame-env
-                              :seed [:compiler-2/apply-closure
-                                     (closure-value/closure-scope closure-info)]
-                              :path []
-                              :props []
-                              :applications []}
-                             compile-state))]
-    {:state state
-     :net (:net state)
-     :props (:props state)
-     :result result
-     :result-id (env/binding-id result)}))
+  ([network closure-info frame-env compile-state]
+   (prepare-closure-frame dispatch/compile-expression
+                          network closure-info frame-env compile-state))
+  ([compile* network closure-info frame-env compile-state]
+   (let [[state result]
+         (compile-body compile*
+                       (closure-value/closure-body closure-info)
+                       frame-env
+                       (merge {:net network
+                               :env frame-env
+                               :seed [:compiler-2/apply-closure
+                                      (closure-value/closure-scope closure-info)]
+                               :path []
+                               :props []
+                               :applications []
+                               :compiler compile*}
+                              compile-state))]
+     {:state state
+      :net (:net state)
+      :props (:props state)
+      :result result
+      :result-id (env/binding-id result)})))
 
 (defn- install-output-adapter
   [n result-id out-inner]
@@ -266,7 +269,7 @@
     (core/run-tasks tasks n)))
 
 (defn- run-closure-body
-  [network closure-info arg-ids output-targets]
+  [compile* network closure-info arg-ids output-targets]
   (let [inputs (closure-value/closure-inputs closure-info)
         output (closure-value/closure-output closure-info)
         lexical-env (closure-value/closure-env closure-info)
@@ -290,6 +293,7 @@
                                                  output-inners)
                                            inner-inputs)
                   prepared (prepare-closure-frame
+                            compile*
                             %
                             closure-info
                             activation-env
@@ -335,8 +339,8 @@
       {:input-ids arg-ids
        :targets [[nil out-id]]})))
 
-(defn closure-application-messages
-  [closure-id _args-id scheduled-arg-ids out-id network]
+(defn closure-application-messages-with
+  [compile* closure-id _args-id scheduled-arg-ids out-id network]
   (let [closure-cv (h/strongest-or-nothing network closure-id)
         closure-info (scope-source/unwrap closure-cv)
         arg-ids (vec scheduled-arg-ids)]
@@ -352,7 +356,8 @@
           []
           (let [output-ids (mapv second targets)
                 network* (reduce h/ensure-cell network output-ids)
-                after-body (run-closure-body network*
+                after-body (run-closure-body compile*
+                                             network*
                                              closure-info
                                              (vec input-ids)
                                              targets)]
@@ -362,16 +367,23 @@
                                                       network*
                                                       output-ids))}))))))
 
-(defn p:apply-closure
+(defn closure-application-messages
+  [closure-id args-id scheduled-arg-ids out-id network]
+  (closure-application-messages-with dispatch/compile-expression
+                                     closure-id args-id scheduled-arg-ids
+                                     out-id network))
+
+(defn p:apply-closure-with
   "Apply a compiler-2 closure-info cell to argument cells and one output cell."
-  [closure-id args-id arg-ids out-id]
+  [compile* closure-id args-id arg-ids out-id]
   (let [arg-ids (vec arg-ids)
         activate (fn [_inputs _outputs network]
-                   (closure-application-messages closure-id
-                                                 args-id
-                                                 arg-ids
-                                                 out-id
-                                                 network))
+                   (closure-application-messages-with compile*
+                                                      closure-id
+                                                      args-id
+                                                      arg-ids
+                                                      out-id
+                                                      network))
         inputs (into [closure-id args-id] arg-ids)]
     (fn [network]
       (let [network* (reduce h/ensure-cell network (conj inputs out-id))
@@ -384,11 +396,18 @@
                                     (fnil conj #{})
                                     prop-id)]))))
 
+(defn p:apply-closure
+  [closure-id args-id arg-ids out-id]
+  (p:apply-closure-with dispatch/compile-expression
+                        closure-id args-id arg-ids out-id))
+
 (defn- primitive-application-messages
-  [operator context-id arg-ids out-id network]
-  (if-let [activate (h/application-activate operator)]
-    (activate network context-id arg-ids out-id)
-    []))
+  [compile* operator context-id arg-ids out-id network]
+  (if-let [activate (operator-value/operator-compiler-activate operator)]
+    (activate compile* network context-id arg-ids out-id)
+    (if-let [activate (h/application-activate operator)]
+      (activate network context-id arg-ids out-id)
+      [])))
 
 (defn application-scope
   "Select one compatible lexical application context and combine provenance."
@@ -425,8 +444,9 @@
       (sequential? result) (mapv (partial scope-message scope) result)
       :else result)))
 
-(defn application-messages
-  [application-id operator-id args-id scheduled-arg-ids context-id out-id network]
+(defn application-messages-with
+  [compile* application-id operator-id args-id scheduled-arg-ids context-id out-id
+   network]
   (let [application-info (h/strongest-or-nothing network application-id)
         operator-answer (h/strongest-or-nothing network operator-id)
         operator (scope-source/unwrap operator-answer)
@@ -447,43 +467,53 @@
       []
 
       (operator-value/operator-closure? operator)
-      (primitive-application-messages operator
+      (primitive-application-messages compile*
+                                      operator
                                       context-id
                                       scheduled-arg-ids
                                       out-id
                                       network)
 
       (h/application-activate operator)
-      (primitive-application-messages operator
+      (primitive-application-messages compile*
+                                      operator
                                       context-id
                                       scheduled-arg-ids
                                       out-id
                                       network)
 
       :else
-      (closure-application-messages operator-id
-                                    args-id
-                                    scheduled-arg-ids
-                                    out-id
-                                    network))]
+      (closure-application-messages-with compile*
+                                         operator-id
+                                         args-id
+                                         scheduled-arg-ids
+                                         out-id
+                                         network))]
     (scope-activation-result scope result)))
 
-(defn p:apply-application
+(defn application-messages
+  [application-id operator-id args-id scheduled-arg-ids context-id out-id network]
+  (application-messages-with dispatch/compile-expression
+                             application-id operator-id args-id scheduled-arg-ids
+                             context-id out-id network))
+
+(defn p:apply-application-with
   "Evaluate one retained compiler-2 application object.
 
   The application object is declaration data. This propagator owns executable
   lowering at evaluation time: primitive operators produce messages directly,
   and closure values delegate to the closure application path."
-  [application-id operator-id args-id arg-ids context-id out-id]
+  [compile* application-id operator-id args-id arg-ids context-id out-id]
   (let [arg-ids (vec arg-ids)
         activate (fn [_inputs _outputs network]
-                   (application-messages application-id
-                                         operator-id
-                                         args-id
-                                         arg-ids
-                                         context-id
-                                         out-id
-                                         network))
+                   (application-messages-with compile*
+                                              application-id
+                                              operator-id
+                                              args-id
+                                              arg-ids
+                                              context-id
+                                              out-id
+                                              network))
         inputs (into [application-id operator-id args-id context-id] arg-ids)]
     (fn [network]
       (let [network* (reduce h/ensure-cell network (conj inputs out-id))
@@ -496,24 +526,30 @@
                                     (fnil conj #{})
                                     prop-id)]))))
 
+(defn p:apply-application
+  [application-id operator-id args-id arg-ids context-id out-id]
+  (p:apply-application-with dispatch/compile-expression
+                            application-id operator-id args-id arg-ids
+                            context-id out-id))
+
 (defn- install-child-env-cell
   [network parent-env-id child-env-id]
   (reduce h/ensure-cell network [parent-env-id child-env-id]))
 
 (defn- compile-expr
-  [expr child-env network seed]
-  ((requiring-resolve 'propagators.compiler-2.core/g:compile)
-   expr
-   child-env
+  [compile* expr child-env network seed]
+  (compile*
    {:net network
     :env child-env
     :seed seed
     :path []
     :props []
-    :applications []}))
+    :applications []
+    :compiler compile*}
+   expr))
 
-(defn execute-sub-env-messages
-  [parent-env-id expr-id child-env-id out-id network]
+(defn execute-sub-env-messages-with
+  [compile* parent-env-id expr-id child-env-id out-id network]
   (let [expr (h/strongest-or-nothing network expr-id)
         parent-env (h/strongest-or-nothing network parent-env-id)]
     (if (or (value/unusable? expr)
@@ -527,6 +563,7 @@
         (if (value/unusable? child-env)
           []
           (let [[state result] (compile-expr
+                                compile*
                                 expr
                                 child-env
                                 with-child
@@ -557,6 +594,35 @@
               (not (value/unusable? output-content))
               (conj (message out-id output-content)))))))))
 
+(defn execute-sub-env-messages
+  [parent-env-id expr-id child-env-id out-id network]
+  (execute-sub-env-messages-with dispatch/compile-expression
+                                 parent-env-id expr-id child-env-id out-id
+                                 network))
+
+(defn p:execute-sub-env-with
+  [compile* parent-env-id expr-id watch-ids child-env-id out-id]
+  (let [watch-ids (vec watch-ids)
+        inputs (into [parent-env-id expr-id] watch-ids)
+        outputs [child-env-id out-id]
+        activate (fn [_inputs _outputs network]
+                   (execute-sub-env-messages-with compile*
+                                                  parent-env-id
+                                                  expr-id
+                                                  child-env-id
+                                                  out-id
+                                                  network))]
+    (fn [network]
+      (let [network* (reduce h/ensure-cell network (into inputs outputs))
+            [prop-id n] ((prop/construct-propagator :compiler-2/execute-sub-env
+                                                    activate inputs outputs)
+                         network*)]
+        [prop-id
+         (net/update-net-dict-entry n
+                                    execute-sub-env-props-key
+                                    (fnil conj #{})
+                                    prop-id)]))))
+
 (defn p:execute-sub-env
   "Compile and run one expression in a child compiler-2 env.
 
@@ -568,22 +634,5 @@
   ([parent-env-id expr-id child-env-id out-id]
    (p:execute-sub-env parent-env-id expr-id [] child-env-id out-id))
   ([parent-env-id expr-id watch-ids child-env-id out-id]
-   (let [watch-ids (vec watch-ids)
-         inputs (into [parent-env-id expr-id] watch-ids)
-         outputs [child-env-id out-id]
-         activate (fn [_inputs _outputs network]
-                    (execute-sub-env-messages parent-env-id
-                                              expr-id
-                                              child-env-id
-                                              out-id
-                                              network))]
-     (fn [network]
-       (let [network* (reduce h/ensure-cell network (into inputs outputs))
-             [prop-id n] ((prop/construct-propagator :compiler-2/execute-sub-env
-                                                     activate inputs outputs)
-                          network*)]
-         [prop-id
-          (net/update-net-dict-entry n
-                                     execute-sub-env-props-key
-                                     (fnil conj #{})
-                                     prop-id)])))))
+   (p:execute-sub-env-with dispatch/compile-expression
+                           parent-env-id expr-id watch-ids child-env-id out-id)))

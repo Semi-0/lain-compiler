@@ -2,6 +2,7 @@
   "Lazy topology installers for compiler-2 special forms."
   (:require [propagators.cells.cell :as cell]
             [propagators.cells.value :as value]
+            [propagators.compiler-2.dispatch :as compiler-dispatch]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
             [propagators.compiler-2.topology-effects :as topology-effects]
@@ -78,27 +79,26 @@
        vec))
 
 (defn- compile-body-state
-  [base-network captured-state body]
-  (let [compile* (requiring-resolve 'propagators.compiler-2.core/g:compile)
-        body-state (-> captured-state
+  [compile* base-network captured-state body]
+  (let [body-state (-> captured-state
                        (assoc :net base-network
                               :path (conj (:path captured-state) :body)
                               :props []
                               :applications []))
-        [state' _binding] (compile* body (:env body-state) body-state)]
+        [state' _binding] (compile* body-state body)]
     state'))
 
 (defn- body-activation-result
-  [base-network captured-state body marker-effect]
-  (let [compiled-state (compile-body-state base-network captured-state body)
+  [compile* base-network captured-state body marker-effect]
+  (let [compiled-state (compile-body-state compile* base-network captured-state body)
         compiled-network (:net compiled-state)]
     (-> (topology-effects/network-diff base-network
                                        compiled-network
                                        (:props compiled-state))
         (update :effects #(into [marker-effect] %)))))
 
-(defn install-when-topology
-  [state condition-id body]
+(defn install-when-topology-with
+  [compile* state condition-id body]
   (let [[state' result-binding] (h/new-cell state :when-result)
         result-id (env/binding-id result-binding)
         prop-id (h/node-id state' :when-prop)
@@ -118,6 +118,7 @@
 
                        :else
                        (body-activation-result
+                        compile*
                         network
                         captured-state
                         body
@@ -131,3 +132,8 @@
          (assoc :net network')
          (h/add-props [installed-id]))
      result-binding]))
+
+(defn install-when-topology
+  [state condition-id body]
+  (install-when-topology-with compiler-dispatch/compile-expression
+                              state condition-id body))

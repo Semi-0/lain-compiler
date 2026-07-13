@@ -9,6 +9,7 @@
             [propagators.compiler-2.application :as application]
             [propagators.compiler-2.application-value :as application-value]
             [propagators.compiler-2.closure-value :as closure-value]
+            [propagators.compiler-2.dispatch :as dispatch]
             [propagators.compiler-2.helpers :as h]
             [propagators.compiler-2.topology-effects :as topology-effects]
             [propagators.datastructures.scope-source :as scope-source]
@@ -25,7 +26,7 @@
            [retained-application-scope key])))
 
 (defn- declare-closure-frame
-  [network application-id closure-id closure arg-ids out-id]
+  [compile* network application-id closure-id closure arg-ids out-id]
   (when-let [{:keys [input-ids targets]}
              (application/closure-call-plan closure arg-ids out-id)]
     (let [key [application-id closure-id arg-ids out-id]
@@ -37,11 +38,12 @@
                      input-ids)
           prepared-network (h/seed-cell network frame-id frame-env)
           prepared (application/prepare-closure-frame
+                    compile*
                     prepared-network
                     closure
                     frame-env
                     {:seed [:compiler-2/retained-application key]
-                     :closure-frame-mode? true})]
+                     :application/cell-declarer :retained-frame})]
       (-> (topology-effects/network-diff network
                                          (:net prepared)
                                          (:props prepared))
@@ -49,8 +51,8 @@
                   #(into [(fvm/bind-name retained-application-scope key frame-id)]
                          %))))))
 
-(defn application-messages
-  [application-id operator-id args-id arg-ids context-id out-id network]
+(defn application-messages-with
+  [compile* application-id operator-id args-id arg-ids context-id out-id network]
   (let [app-info (h/strongest-or-nothing network application-id)
         answer (h/strongest-or-nothing network operator-id)
         operator (scope-source/unwrap answer)
@@ -68,7 +70,8 @@
            (not (scope-source/scope-value? answer)))
       (if (application-installed? network key)
         []
-        (or (declare-closure-frame network
+        (or (declare-closure-frame compile*
+                                   network
                                    application-id
                                    operator-id
                                    operator
@@ -77,25 +80,33 @@
             []))
 
       :else
-      (application/application-messages application-id
-                                        operator-id
-                                        args-id
-                                        arg-ids
-                                        context-id
-                                        out-id
-                                        network))))
+        (application/application-messages-with compile*
+                                               application-id
+                                               operator-id
+                                               args-id
+                                               arg-ids
+                                               context-id
+                                               out-id
+                                               network))))
 
-(defn p:apply-application
-  [application-id operator-id args-id arg-ids context-id out-id]
+(defn application-messages
+  [application-id operator-id args-id arg-ids context-id out-id network]
+  (application-messages-with dispatch/compile-expression
+                             application-id operator-id args-id arg-ids
+                             context-id out-id network))
+
+(defn p:apply-application-with
+  [compile* application-id operator-id args-id arg-ids context-id out-id]
   (let [arg-ids (vec arg-ids)
         activate (fn [_inputs _outputs network]
-                   (application-messages application-id
-                                         operator-id
-                                         args-id
-                                         arg-ids
-                                         context-id
-                                         out-id
-                                         network))
+                   (application-messages-with compile*
+                                              application-id
+                                              operator-id
+                                              args-id
+                                              arg-ids
+                                              context-id
+                                              out-id
+                                              network))
         inputs (into [application-id operator-id args-id context-id] arg-ids)]
     (fn [network]
       (let [network* (reduce h/ensure-cell network (conj inputs out-id))
@@ -107,3 +118,9 @@
                                     retained-application-props-key
                                     (fnil conj #{})
                                     prop-id)]))))
+
+(defn p:apply-application
+  [application-id operator-id args-id arg-ids context-id out-id]
+  (p:apply-application-with dispatch/compile-expression
+                            application-id operator-id args-id arg-ids
+                            context-id out-id))

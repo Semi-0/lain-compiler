@@ -3,6 +3,7 @@
   (:require [propagators.cells.value :as value]
             [propagators.compiler-2.application :as application]
             [propagators.compiler-2.closure-value :as closure-value]
+            [propagators.compiler-2.dispatch :as dispatch]
             [propagators.compiler-2.helpers :as h]
             [propagators.compiler-2.topology-effects :as topology-effects]
             [propagators.gur.flat :as fvm]
@@ -19,23 +20,24 @@
    (get-in (net/network-dict-entry network fvm/name-bindings-key)
            [frame-scope key])))
 
-(defn- compile-frame [network closure-id env-id closure frame-env]
+(defn- compile-frame [compile* network closure-id env-id closure frame-env]
   (let [key (frame-key closure-id env-id)
         prepared (application/prepare-closure-frame
+                  compile*
                   network
                   closure
                   frame-env
                   {:seed [:compiler-2/closure-frame key]
-                   :closure-frame-mode? true})
+                   :application/cell-declarer :retained-frame})
         diff (topology-effects/network-diff network
                                             (:net prepared)
                                             (:props prepared))]
     (update diff :effects
             #(into [(fvm/bind-name frame-scope key env-id)] %))))
 
-(defn p:apply-closure
+(defn p:apply-closure-with
   "Declare a closure body into the outer network using a pre-bound frame env."
-  [closure-id env-id]
+  [compile* closure-id env-id]
   (let [key (frame-key closure-id env-id)
         activate
         (fn [_ _ network]
@@ -46,9 +48,14 @@
                   (value/unusable? frame-env)) []
               (not (closure-value/closure-info? closure)) []
               (frame-installed? network key) []
-              :else (compile-frame network closure-id env-id closure frame-env))))]
+              :else (compile-frame compile* network closure-id env-id
+                                   closure frame-env))))]
     (prop/construct-propagator
      (h/stable-node-id :compiler-2/closure-frame key :prop)
      activate
      [closure-id env-id]
      [])))
+
+(defn p:apply-closure
+  [closure-id env-id]
+  (p:apply-closure-with dispatch/compile-expression closure-id env-id))

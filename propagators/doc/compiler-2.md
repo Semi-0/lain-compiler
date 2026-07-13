@@ -291,6 +291,61 @@ but primitive calls disappeared into lowered edges. The direct primitive
 installer functions still exist as compatibility helpers, but compiler-2
 application compilation no longer calls them directly.
 
+## Composable Compiler Declaration
+
+Compiler-2 keeps its public `g:compile` MultiFn, but built-in compilation is
+assembled from ordinary functions. The default compiler uses continuation
+passing behind the same synchronous facade:
+
+```clojure
+compile-k [state expr k] -> thunk
+k         [state binding] -> thunk-or-result
+compile*  [state expr] -> [state binding]
+```
+
+`propagators.compiler-common.cps/on` turns a predicate and CPS handler into a
+rule that delegates non-matches. `compose-rules` builds the rule chain and
+`make-compiler` drives it with Clojure's `trampoline`.
+`propagators.compiler-2.cps-core/compiler-dispatch` is the production rule
+composition. `predicate-core` remains available as the synchronous comparison
+implementation. A local CPS variant can prepend another `on` rule without
+adding or replacing a global `defmethod`, then pass the resulting compiler as
+`:compiler` to `compile-expr`.
+
+`propagators.compiler-2.core/g:compile`, `g:apply`, and `g:advance` remain
+compatibility exports. They are not used to select expressions on the normal
+CPS compilation path.
+
+The environment has one internal authority: `:env` in compiler state. The
+three-argument `g:compile` methods remain compatibility adapters and copy their
+explicit environment into state before calling a handler.
+
+Selected compilers are captured by delayed installers. Closure bodies, lazy
+`when`, direct list operands, and `execute-sub-env` therefore continue through
+the same local handler composition when compilation happens during scheduler
+activation.
+
+Operators that intentionally compile raw operand forms may provide the
+functional `:operator/direct-compiler` strategy:
+
+```clojure
+[compile-k state operand-forms out-id k] -> thunk
+```
+
+The built-in list and constraint operators use it. The existing
+three-argument direct installer remains an opaque compatibility fallback.
+
+Application declaration is independently selectable with
+`:application/cell-declarer`. The default `:runtime` strategy declares a normal
+retained application; `:retained-frame` declares closure applications into an
+outer retained frame; a function supplies an isolated custom strategy. Runtime
+message production remains in the application namespaces.
+
+Verified in `propagators.compiler-2-composition-test` and
+`propagators.compiler-2-cps-test`, including public MultiFn identity,
+independent compiler instances, delayed local compilation, application
+strategy selection, parity, and deeply nested stack-safe traversal.
+
 ## Closure Values Are Data
 
 A compiler-2 closure cell stores a compound object, not a

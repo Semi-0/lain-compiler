@@ -27,7 +27,7 @@
 (def closure-reducer-id
   (behavior/retained-value-reducer-id :compiler-behavior/closure))
 
-(declare g:compile)
+(declare g:compile default-compiler)
 
 (defn- compile-timestamp
   [state]
@@ -90,12 +90,12 @@
       (env/binding-id operator-binding) :cell
       :else :unsupported)))
 
-(defmethod g:apply :primitive
-  [operator-binding operand-forms _calling-env state out-id]
+(defn declare-primitive-application
+  [compile* operator-binding operand-forms state out-id]
   (let [app-id (:application/app-id state)
         operator-ast (:application/operator-ast state)
         context-id (:context-id state)
-        [state' arg-bindings] (common/compile-args g:compile state operand-forms)
+        [state' arg-bindings] (common/compile-args compile* state operand-forms)
         arg-ids (mapv env/binding-id arg-bindings)]
     (when-not (every? some? arg-ids)
       (throw (ex-info "application arguments must compile to cells"
@@ -118,12 +118,12 @@
             context-id))
        (env/cell-binding result-id)])))
 
-(defmethod g:apply :cell
-  [operator-binding operand-forms _calling-env state out-id]
+(defn declare-cell-application
+  [compile* operator-binding operand-forms state out-id]
   (let [app-id (:application/app-id state)
         operator-ast (:application/operator-ast state)
         context-id (:context-id state)
-        [state' arg-bindings] (common/compile-args g:compile state operand-forms)
+        [state' arg-bindings] (common/compile-args compile* state operand-forms)
         arg-ids (mapv env/binding-id arg-bindings)]
     (when-not (every? some? arg-ids)
       (throw (ex-info "application arguments must compile to cells"
@@ -142,6 +142,30 @@
             out-id
             context-id))
        (env/cell-binding out-id)])))
+
+(defn apply-operator
+  [compile* operator-binding operand-forms _calling-env state out-id]
+  (cond
+    (fn? operator-binding)
+    (declare-primitive-application compile* operator-binding operand-forms
+                                   state out-id)
+
+    (env/binding-id operator-binding)
+    (declare-cell-application compile* operator-binding operand-forms state out-id)
+
+    :else
+    (throw (ex-info "application operator is not callable"
+                    {:operator operator-binding}))))
+
+(defmethod g:apply :primitive
+  [operator-binding operand-forms calling-env state out-id]
+  (apply-operator default-compiler operator-binding operand-forms calling-env
+                  state out-id))
+
+(defmethod g:apply :cell
+  [operator-binding operand-forms calling-env state out-id]
+  (apply-operator default-compiler operator-binding operand-forms calling-env
+                  state out-id))
 
 (defmethod g:apply :unsupported
   [operator-binding _operand-forms _calling-env _state _out-id]
@@ -167,61 +191,78 @@
   (fn [expr _env _state]
     (common/expression-kind expr)))
 
-(defmethod g:compile :literal
-  [expr _env state]
+(defn compile-literal
+  [_compile* state expr]
   (new-behavior-cell state
                      :literal
                      (literal-behavior state
                                        (ast/value expr))))
 
-(defmethod g:compile :symbol
-  [expr _env state]
-  (common/compile-symbol state (ast/name expr)))
+(def compile-symbol common/compile-symbol-expression)
 
-(defmethod g:compile :sequence
-  [expr _env state]
-  (common/compile-seq g:compile state (ast/body expr)))
+(def compile-sequence common/compile-sequence-expression)
 
-(defmethod g:compile :let-cell
-  [expr _env state]
-  (common/compile-let-cell g:compile
-                           state
-                           (ast/names expr)
-                           (ast/body expr)))
+(def compile-let-cell common/compile-let-cell-expression)
 
-(defmethod g:compile :network
-  [expr _env state]
+(defn compile-network-form
+  [_compile* state expr]
   (compile-network state (ast/inputs expr) nil (ast/body expr)))
 
-(defmethod g:compile :compound
-  [expr _env state]
+(defn compile-compound
+  [_compile* state expr]
   (compile-network state (ast/inputs expr) (ast/output expr) (ast/body expr)))
 
-(defmethod g:compile :application
-  [expr _env state]
-  (common/compile-application g:compile
-                              g:advance
-                              g:apply
-                              state
-                              (ast/operator expr)
-                              (ast/args expr)))
+(def compile-application
+  (common/application-handler g:advance apply-operator))
+
+(defn- compile-via-multifn
+  [_compile* state expr]
+  (g:compile expr (:env state) state))
+
+(def compiler-dispatch
+  (common/compose-rules
+   (common/on (common/expression-kind? :literal) compile-literal)
+   (common/on (common/expression-kind? :symbol) compile-symbol)
+   (common/on (common/expression-kind? :sequence) compile-sequence)
+   (common/on (common/expression-kind? :let-cell) compile-let-cell)
+   (common/on (common/expression-kind? :network) compile-network-form)
+   (common/on (common/expression-kind? :compound) compile-compound)
+   (common/on (common/expression-kind? :application) compile-application)
+   compile-via-multifn))
+
+(def default-compiler
+  (common/make-compiler compiler-dispatch))
+
+(defmacro ^:private define-compile-adapter
+  [kind handler]
+  `(defmethod g:compile ~kind
+     [expr# env# state#]
+     (~handler default-compiler (assoc state# :env env#) expr#)))
+
+(define-compile-adapter :literal compile-literal)
+(define-compile-adapter :symbol compile-symbol)
+(define-compile-adapter :sequence compile-sequence)
+(define-compile-adapter :let-cell compile-let-cell)
+(define-compile-adapter :network compile-network-form)
+(define-compile-adapter :compound compile-compound)
+(define-compile-adapter :application compile-application)
 
 (defn compile-expr
   "Compile AST data into a behavior-valued network and result cell."
   ([expr] (compile-expr expr (h/behavior-env)))
   ([expr env] (compile-expr expr env {}))
-  ([expr env {:keys [net seed path timestamp]
+  ([expr env {:keys [net seed path timestamp compiler]
               :or {net net/empty-net path [] timestamp 0}}]
    (let [seed (or seed (ids/new-node-id))
-         [state result] (g:compile expr
-                                   env
-                                   {:net net
-                                    :env env
-                                    :seed seed
-                                    :path path
-                                    :timestamp timestamp
-                                    :props []
-                                    :applications []})]
+         compile* (or compiler default-compiler)
+         [state result] (compile* {:net net
+                                   :env env
+                                   :seed seed
+                                   :path path
+                                   :timestamp timestamp
+                                   :props []
+                                   :applications []}
+                                  expr)]
      (common/compiled-map state result))))
 
 (defn compile-source

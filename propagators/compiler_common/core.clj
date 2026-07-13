@@ -25,14 +25,42 @@
       :apply :application
       type)))
 
+(defn on
+  "Make a compiler rule that handles matching expressions and delegates others."
+  [predicate handler]
+  (fn [next]
+    (fn [compile* state expr]
+      (if (predicate expr)
+        (handler compile* state expr)
+        (next compile* state expr)))))
+
+(defn compose-rules
+  "Compose rule functions around one final compiler handler."
+  [& rules]
+  (when-not (seq rules)
+    (throw (ex-info "compose-rules requires a final handler" {})))
+  (reduce (fn [next rule] (rule next))
+          (last rules)
+          (reverse (butlast rules))))
+
+(defn expression-kind?
+  [kind]
+  #(= kind (expression-kind %)))
+
+(defn make-compiler
+  "Close recursive compilation over a composed dispatch function."
+  [dispatch]
+  (letfn [(compile* [state expr]
+            (dispatch compile* state expr))]
+    compile*))
+
 (defn compile-seq [compile-f state forms]
   (let [base-path (:path state)]
     (reduce
      (fn [[state _] [idx form]]
-       (let [[state' result] (compile-f form
-                                        (:env state)
-                                        (h/child (with-path state base-path)
-                                                 idx))]
+       (let [[state' result] (compile-f (h/child (with-path state base-path)
+                                                idx)
+                                        form)]
          [(with-path state' base-path) result]))
      [state nil]
      (map-indexed vector forms))))
@@ -47,10 +75,9 @@
   (let [base-path (:path state)]
     (reduce
      (fn [[state acc] [idx arg]]
-       (let [[state' binding] (compile-f arg
-                                         (:env state)
-                                         (h/child (with-path state base-path)
-                                                  [:arg idx]))]
+       (let [[state' binding] (compile-f (h/child (with-path state base-path)
+                                                 [:arg idx])
+                                         arg)]
          [(with-path state' base-path) (conj acc binding)]))
      [state []]
      (map-indexed vector args))))
@@ -99,16 +126,10 @@
         (assoc :net network')
         (h/add-props [prop-id]))))
 
-(defn compile-application
-  [compile-f advance-f apply-f state op args]
-  (let [base-path (:path state)
-        [state' op-binding] (compile-f op
-                                       (:env state)
-                                       (h/child (with-path state base-path)
-                                                :operator))
-        state' (with-path state' base-path)
-        operator-binding (advance-f op-binding state')
-        [state'' out-binding] (result-cell state')
+(defn prepare-application
+  [advance-f state op op-binding]
+  (let [operator-binding (advance-f op-binding state)
+        [state'' out-binding] (result-cell state)
         out-id (env/binding-id out-binding)
         app-id (h/stable-node-id (:seed state'')
                                  (:path state'')
@@ -122,16 +143,30 @@
                                            app-id
                                            operator-ast))
         context-id (env/binding-id context-binding)]
+    [(assoc state'''
+            :context-id context-id
+            :application/app-id app-id
+            :application/operator-ast operator-ast)
+     operator-binding
+     out-id]))
+
+(defn compile-application
+  [compile-f advance-f apply-f state op args]
+  (let [base-path (:path state)
+        [state' op-binding] (compile-f (h/child (with-path state base-path)
+                                               :operator)
+                                       op)
+        state' (with-path state' base-path)
+        [state''' operator-binding out-id]
+        (prepare-application advance-f state' op op-binding)]
     (apply-f operator-binding
              args
              (:env state''')
-             (assoc state'''
-                    :context-id context-id
-                    :application/app-id app-id
-                    :application/operator-ast operator-ast)
+             state'''
              out-id)))
 
-(defn compile-let-cell [compile-f state names body]
+(defn declare-let-cell-scope
+  [state names]
   (let [base-path (:path state)
         child-env (env/sub-env (:env state))
         [state' scoped-env]
@@ -145,9 +180,33 @@
               (env/bind-local scoped-env name binding)]))
          [state child-env]
          (map-indexed vector names))]
-    (compile-f body
-               scoped-env
-               (h/child (assoc state' :env scoped-env) :body))))
+    [(h/child (assoc state' :env scoped-env) :body) scoped-env]))
+
+(defn compile-let-cell [compile-f state names body]
+  (let [[body-state _scoped-env] (declare-let-cell-scope state names)]
+    (compile-f body-state body)))
+
+(defn compile-symbol-expression
+  [_compile* state expr]
+  (compile-symbol state (ast/name expr)))
+
+(defn compile-sequence-expression
+  [compile* state expr]
+  (compile-seq compile* state (ast/body expr)))
+
+(defn compile-let-cell-expression
+  [compile* state expr]
+  (compile-let-cell compile* state (ast/names expr) (ast/body expr)))
+
+(defn application-handler
+  [advance-f apply-f]
+  (fn [compile* state expr]
+    (compile-application compile*
+                         advance-f
+                         (partial apply-f compile*)
+                         state
+                         (ast/operator expr)
+                         (ast/args expr))))
 
 (defn annotated-net [network result props env applications]
   (-> network

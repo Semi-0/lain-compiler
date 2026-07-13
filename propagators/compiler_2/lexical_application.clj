@@ -4,6 +4,7 @@
             [propagators.compiler-2.application :as application]
             [propagators.compiler-2.closure-frame :as closure-frame]
             [propagators.compiler-2.closure-value :as closure-value]
+            [propagators.compiler-2.dispatch :as dispatch]
             [propagators.compiler-2.helpers :as h]
             [propagators.compiler-2.topology-effects :as topology-effects]
             [propagators.datastructures.scope-source :as scope-source]
@@ -49,7 +50,7 @@
   ((scoped-projector scope) private-id public-id))
 
 (defn- declare-raw-closure
-  [network key closure arg-ids out-id]
+  [compile* network key closure arg-ids out-id]
   (when-let [{:keys [input-ids targets]}
              (application/closure-call-plan closure arg-ids out-id)]
     (let [frame-id (private-id key :env)
@@ -60,11 +61,12 @@
                      input-ids)
           prepared-network (h/seed-cell network frame-id frame-env)
           prepared (application/prepare-closure-frame
+                    compile*
                     prepared-network
                     closure
                     frame-env
                     {:seed [:compiler-2/selected-closure key]
-                     :closure-frame-mode? true})]
+                     :application/cell-declarer :retained-frame})]
       (-> (topology-effects/network-diff network
                                          (:net prepared)
                                          (:props prepared))
@@ -72,7 +74,7 @@
                   #(into [(fvm/bind-name raw-scope key frame-id)] %))))))
 
 (defn- declare-candidate
-  [network scope key closure arg-ids out-id]
+  [compile* network scope key closure arg-ids out-id]
   (when-let [{:keys [input-ids targets]}
              (application/closure-call-plan closure arg-ids out-id)]
     (let [private-closure (private-id key :closure)
@@ -95,7 +97,8 @@
                                  (concat private-outputs
                                          (map second targets)))))
           [frame-prop with-frame]
-          ((closure-frame/p:apply-closure private-closure frame-id) prepared)
+          ((closure-frame/p:apply-closure-with compile* private-closure frame-id)
+           prepared)
           [projection-props compiled]
           (reduce (fn [[props n] [private-id [_ public-id]]]
                     (let [[p n'] ((p:project-output scope private-id public-id) n)]
@@ -107,9 +110,9 @@
           (update :effects
                   #(into [(fvm/bind-name candidate-scope key frame-id)] %))))))
 
-(defn p:apply-lexical-closure
+(defn p:apply-lexical-closure-with
   "Select a scoped closure and retain its existing compiled closure frame."
-  [closure-id arg-ids out-id]
+  [compile* closure-id arg-ids out-id]
   (let [arg-ids (vec arg-ids)
         call-key [closure-id arg-ids out-id]
         activate
@@ -124,7 +127,8 @@
               (let [key [call-key :raw]]
                 (if (raw-installed? network key)
                   []
-                  (or (declare-raw-closure network
+                  (or (declare-raw-closure compile*
+                                           network
                                            key
                                            closure
                                            arg-ids
@@ -144,7 +148,8 @@
                 (cond
                   (nil? scope) []
                   (candidate-installed? network key) []
-                  :else (or (declare-candidate network
+                  :else (or (declare-candidate compile*
+                                               network
                                                scope
                                                key
                                                closure
@@ -159,3 +164,8 @@
      activate
      (into [closure-id] arg-ids)
      [out-id])))
+
+(defn p:apply-lexical-closure
+  [closure-id arg-ids out-id]
+  (p:apply-lexical-closure-with dispatch/compile-expression
+                                closure-id arg-ids out-id))

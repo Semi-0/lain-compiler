@@ -168,12 +168,12 @@ cost is larger final topology for closure-heavy programs.
 Adding a new raw closure execution strategy now localizes to:
 
 - `retained-application/application-messages` for outer application selection;
-- `lexical-application/p:apply-lexical-closure` for closure-frame-mode selected
+- `lexical-application/p:apply-lexical-closure-with` for retained-frame selected
   operators;
 - `application/prepare-closure-frame` for shared closure body preparation.
 
 Application IR did not change for ordinary compiler calls. Compiler dispatch
-changed only at the installer seam and closure-frame-mode applicant choice.
+changed only at the installer seam and `:application/cell-declarer` strategy.
 
 New procedure/data provenance layers should not require application IR changes:
 scope projection remains outside the selected closure frame, and layered

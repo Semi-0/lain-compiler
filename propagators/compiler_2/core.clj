@@ -8,13 +8,17 @@
   (:require [propagators.cells.value :as value]
             [propagators.compiler-2.application :as compiler-app]
             [propagators.compiler-2.ast :as ast]
+            [propagators.compiler-2.closure-frame :as closure-frame]
             [propagators.compiler-2.closure-value :as closure-value]
+            [propagators.compiler-2.dispatch :as dispatch]
             [propagators.compiler-2.env :as env]
             [propagators.compiler-2.helpers :as h]
             [propagators.compiler-2.lazy-topology :as lazy-topology]
+            [propagators.compiler-2.lexical-application :as lexical-application]
             [propagators.compiler-2.operator-value :as operator-value]
             [propagators.compiler-2.parser :as parser]
             [propagators.compiler-2.retained-application :as retained-application]
+            [propagators.compiler-common.cps :as cps]
             [propagators.compiler-common.core :as common]
             [propagators.datastructures.compound-object :as obj]
             [propagators.ids :as ids]
@@ -26,13 +30,16 @@
 (def compiler-props-key common/compiler-props-key)
 (def compiler-applications-key common/compiler-applications-key)
 
-(declare g:compile)
+(def g:compile dispatch/g:compile)
+
+(declare default-compiler)
 
 (defn- install-application-propagator
-  [state app-id operator-ast operator-id result-id context-id]
+  [state compile* app-id operator-ast operator-id result-id context-id]
   (common/install-application-propagator state
                                          (or (:application-installer state)
-                                             retained-application/p:apply-application)
+                                             (partial retained-application/p:apply-application-with
+                                                      compile*))
                                          app-id
                                          operator-ast
                                          operator-id
@@ -69,48 +76,50 @@
       (env/binding-id operator-binding) :cell
       :else :unsupported)))
 
-(defmethod g:apply :primitive
-  [operator-binding operand-forms _calling-env state out-id]
-  (if-let [direct-install (and (operator-value/operator-closure? operator-binding)
-                               (operator-value/operator-direct-installer operator-binding))]
-    (direct-install state operand-forms out-id)
-    (let [app-id (:application/app-id state)
+(defn declare-direct-operator-application
+  [compile* operator-binding operand-forms state out-id]
+  ((operator-value/operator-direct-installer operator-binding)
+   (assoc state :compiler compile*) operand-forms out-id))
+
+(defn- argument-ids
+  [arg-bindings]
+  (let [arg-ids (mapv env/binding-id arg-bindings)]
+    (when-not (every? some? arg-ids)
+      (throw (ex-info "application arguments must compile to cells"
+                      {:args arg-bindings})))
+    arg-ids))
+
+(defn declare-operator-application-bindings
+  [compile* operator-binding arg-bindings state out-id]
+  (let [app-id (:application/app-id state)
         operator-ast (:application/operator-ast state)
         context-id (:context-id state)
-        [state' arg-bindings] (common/compile-args g:compile state operand-forms)
-        arg-ids (mapv env/binding-id arg-bindings)]
-      (when-not (every? some? arg-ids)
-        (throw (ex-info "application arguments must compile to cells"
-                        {:args arg-bindings})))
-      (let [[state'' args-binding] (common/install-argument-object state' arg-ids)
-            args-id (env/binding-id args-binding)
-            [state''' operator-binding'] (common/install-operator-object state''
-                                                                         operator-binding)
-            operator-id (env/binding-id operator-binding')
-            result-id (h/output-id operator-binding arg-ids out-id)
-            prepared (assoc state'''
-                            :application/args-id args-id
-                            :application/arg-ids arg-ids
-                            :application/lowering :primitive)
-            install (and (operator-value/operator-closure? operator-binding)
-                         (not (operator-value/operator-contextual? operator-binding))
-                         (operator-value/operator-static-installer operator-binding))]
-        (if install
-          (install-known-operator prepared
-                                  install
-                                  app-id
-                                  operator-ast
-                                  operator-id
-                                  arg-ids
-                                  result-id
-                                  context-id)
-          [(install-application-propagator prepared
-                                           app-id
-                                           operator-ast
-                                           operator-id
-                                           result-id
-                                           context-id)
-           (env/cell-binding result-id)])))))
+        arg-ids (argument-ids arg-bindings)]
+    (let [[state'' args-binding] (common/install-argument-object state arg-ids)
+          args-id (env/binding-id args-binding)
+          [state''' operator-binding'] (common/install-operator-object state''
+                                                                       operator-binding)
+          operator-id (env/binding-id operator-binding')
+          result-id (h/output-id operator-binding arg-ids out-id)
+          prepared (assoc state'''
+                          :application/args-id args-id
+                          :application/arg-ids arg-ids
+                          :application/lowering :primitive)
+          install (and (operator-value/operator-closure? operator-binding)
+                       (not (operator-value/operator-contextual? operator-binding))
+                       (operator-value/operator-static-installer operator-binding))]
+      (if install
+        (install-known-operator prepared install app-id operator-ast operator-id
+                                arg-ids result-id context-id)
+        [(install-application-propagator prepared compile* app-id operator-ast
+                                         operator-id result-id context-id)
+         (env/cell-binding result-id)]))))
+
+(defn declare-operator-application
+  [compile* operator-binding operand-forms state out-id]
+  (let [[state' arg-bindings] (common/compile-args compile* state operand-forms)]
+    (declare-operator-application-bindings compile* operator-binding
+                                           arg-bindings state' out-id)))
 
 (defn- closure-output-symbols
   [output]
@@ -135,14 +144,13 @@
                        [(route (last forms))])))
       (route body))))
 
-(defn- normalize-closure-output
-  [state output body]
+(defn normalize-closure-output
+  [return-sym output body]
   (let [outputs (closure-output-symbols output)]
     (cond
       (nil? output)
-      (let [return-sym (hidden-return-symbol state)]
-        {:output [return-sym]
-         :body (route-body-result body return-sym)})
+      {:output [return-sym]
+       :body (route-body-result body return-sym)}
 
       (= 1 (count outputs))
       {:output output
@@ -183,7 +191,7 @@
     out-id))
 
 (defn- install-retained-closure-frame
-  [state operator-id closure-info arg-ids out-id]
+  [compile* state operator-id closure-info arg-ids out-id]
   (when-let [{:keys [input-ids targets]}
              (compiler-app/closure-call-plan closure-info arg-ids out-id)]
     (let [frame-env (compiler-app/closure-body-env
@@ -193,9 +201,9 @@
                      input-ids)
           [state' frame-binding] (h/new-cell state :closure-frame-env frame-env)
           frame-id (env/binding-id frame-binding)
-          installer @(requiring-resolve
-                      'propagators.compiler-2.closure-frame/p:apply-closure)
-          [prop-id network'] ((installer operator-id frame-id) (:net state'))
+          [prop-id network'] ((closure-frame/p:apply-closure-with
+                               compile* operator-id frame-id)
+                              (:net state'))
           result-id (if (seq (closure-output-symbols
                               (closure-value/closure-output closure-info)))
                       (second (first targets))
@@ -206,64 +214,115 @@
        (env/cell-binding result-id)])))
 
 (defn- install-retained-lexical-closure
-  [state operator-id arg-ids out-id]
-  (let [installer @(requiring-resolve
-                    'propagators.compiler-2.lexical-application/p:apply-lexical-closure)
-        network (h/ensure-cell (:net state) out-id)
-        [prop-id network'] ((installer operator-id arg-ids out-id) network)]
+  [compile* state operator-id arg-ids out-id]
+  (let [network (h/ensure-cell (:net state) out-id)
+        [prop-id network'] ((lexical-application/p:apply-lexical-closure-with
+                             compile* operator-id arg-ids out-id)
+                            network)]
     [(-> state
          (assoc :net network')
          (h/add-props [prop-id]))
      (env/cell-binding out-id)]))
 
-(defmethod g:apply :cell
-  [operator-binding operand-forms _calling-env state out-id]
+(defn declare-retained-cell-application-bindings
+  [compile* operator-binding arg-bindings state out-id]
+  (let [arg-ids (argument-ids arg-bindings)
+        operator-id (env/binding-id operator-binding)
+        closure-info (known-closure-info (:net state) operator-id)]
+      (if closure-info
+        (or (install-retained-closure-frame compile* state operator-id closure-info
+                                             arg-ids out-id)
+            (throw (ex-info "retained closure arguments do not match closure"
+                            {:operator-id operator-id :arg-ids arg-ids})))
+        (install-retained-lexical-closure compile* state operator-id
+                                          arg-ids out-id))))
+
+(defn declare-retained-cell-application
+  [compile* operator-binding operand-forms state out-id]
+  (let [[state' arg-bindings] (common/compile-args compile* state operand-forms)]
+    (declare-retained-cell-application-bindings compile* operator-binding
+                                                arg-bindings state' out-id)))
+
+(defn declare-runtime-cell-application-bindings
+  [compile* operator-binding arg-bindings state out-id]
   (let [app-id (:application/app-id state)
         operator-ast (:application/operator-ast state)
         context-id (:context-id state)
-        [state' arg-bindings] (common/compile-args g:compile state operand-forms)
-        arg-ids (mapv env/binding-id arg-bindings)]
-    (when-not (every? some? arg-ids)
-      (throw (ex-info "application arguments must compile to cells"
-                      {:args arg-bindings})))
+        arg-ids (argument-ids arg-bindings)]
     (let [operator-id (env/binding-id operator-binding)
-          closure-info (known-closure-info (:net state') operator-id)]
-      (if (:closure-frame-mode? state')
-        (if closure-info
-          (or (install-retained-closure-frame state'
-                                               operator-id
-                                               closure-info
-                                               arg-ids
-                                               out-id)
-              (throw (ex-info "retained closure arguments do not match closure"
-                              {:operator-id operator-id :arg-ids arg-ids})))
-          (install-retained-lexical-closure state' operator-id arg-ids out-id))
-        (let [[state'' args-binding]
-              (common/install-argument-object state' arg-ids)
+          [state'' args-binding] (common/install-argument-object state arg-ids)
           args-id (env/binding-id args-binding)
           result-id (closure-application-result-id state''
                                                    operator-id
                                                    arg-ids
                                                    out-id)]
-          [(-> state''
-               (assoc :application/args-id args-id
-                      :application/arg-ids arg-ids
-                      :application/lowering :closure-cell)
-               (install-application-propagator
-                app-id
-                operator-ast
-                operator-id
-                result-id
-                context-id))
-           (env/cell-binding result-id)])))))
+      [(-> state''
+           (assoc :application/args-id args-id
+                  :application/arg-ids arg-ids
+                  :application/lowering :closure-cell)
+           (install-application-propagator compile* app-id operator-ast
+                                           operator-id result-id context-id))
+       (env/cell-binding result-id)])))
+
+(defn declare-runtime-cell-application
+  [compile* operator-binding operand-forms state out-id]
+  (let [[state' arg-bindings] (common/compile-args compile* state operand-forms)]
+    (declare-runtime-cell-application-bindings compile* operator-binding
+                                               arg-bindings state' out-id)))
+
+(defn resolve-cell-declarer
+  [state]
+  (let [declarer (:application/cell-declarer state)]
+    (cond
+      (or (nil? declarer) (= :runtime declarer))
+      declare-runtime-cell-application
+
+      (= :retained-frame declarer)
+      declare-retained-cell-application
+
+      (fn? declarer)
+      declarer
+
+      :else
+      (throw (ex-info "unknown application cell declarer"
+                      {:application/cell-declarer declarer})))))
+
+(defn apply-operator
+  [compile* operator-binding operand-forms _calling-env state out-id]
+  (cond
+    (and (operator-value/operator-closure? operator-binding)
+         (operator-value/operator-direct-installer operator-binding))
+    (declare-direct-operator-application compile* operator-binding
+                                         operand-forms state out-id)
+
+    (or (operator-value/operator-closure? operator-binding)
+        (fn? operator-binding))
+    (declare-operator-application compile* operator-binding operand-forms
+                                  state out-id)
+
+    (env/binding-id operator-binding)
+    ((resolve-cell-declarer state) compile* operator-binding operand-forms
+                                   state out-id)
+
+    :else
+    (throw (ex-info "application operator is not callable"
+                    {:operator operator-binding}))))
+
+(defmethod g:apply :primitive
+  [operator-binding operand-forms calling-env state out-id]
+  (apply-operator default-compiler operator-binding operand-forms calling-env
+                  state out-id))
+
+(defmethod g:apply :cell
+  [operator-binding operand-forms calling-env state out-id]
+  (apply-operator default-compiler operator-binding operand-forms calling-env
+                  state out-id))
 
 (defmethod g:apply :unsupported
   [operator-binding _operand-forms _calling-env _state _out-id]
   (throw (ex-info "application operator is not callable"
                   {:operator operator-binding})))
 
-(defn- compile-application [state op args]
-  (common/compile-application g:compile g:advance g:apply state op args))
 
 (defn- copied-env-value
   [parent-env locals]
@@ -307,38 +366,50 @@
            :output output
            :prop-id prop-id}))
 
-(defn- compile-network
+(defn closure-locals
+  [name closure-id]
+  (if name {name (env/compound-binding closure-id)} {}))
+
+(defn seed-closure-declaration
+  [state closure-id closure-env-id lexical-env closure-object]
+  (-> state
+      (update :net h/seed-cell closure-env-id lexical-env)
+      (update :net h/seed-cell closure-id closure-object)))
+
+(defn attach-closure-environment
+  [state closure-id closure-env-id]
+  (let [[prop-id network]
+        ((obj/p:slot closure-value/closure-env-slot closure-env-id closure-id)
+         (:net state))]
+    [(-> state
+         (assoc :net network)
+         (h/add-props [prop-id]))
+     prop-id]))
+
+(defn declare-closure
   ([state inputs output body]
-   (compile-network state nil inputs output body))
+   (declare-closure state nil inputs output body))
   ([state name inputs output body]
    (let [{closure-output :output closure-body :body}
-         (normalize-closure-output state output body)
+         (normalize-closure-output (hidden-return-symbol state) output body)
          parent-env (:env state)
          closure-id (h/node-id state :closure)
-         self-binding (env/compound-binding closure-id)
-         locals (if name {name self-binding} {})
+         locals (closure-locals name closure-id)
          lexical-env (copied-env-value parent-env locals)
-         lexical-scope (env/scope-id lexical-env)
          closure-object (copied-closure-object lexical-env
                                                closure-body
                                                inputs
                                                closure-output)
          closure-env-id (h/node-id state :closure-env)
          closure-binding (env/compound-binding closure-id)
-         state-with-env (assoc state
-                               :net (h/seed-cell (:net state)
-                                                 closure-env-id
-                                                 lexical-env))
-         state-with-closure (assoc state-with-env
-                                   :net (h/seed-cell (:net state-with-env)
-                                                     closure-id
-                                                     closure-object))
-         [env-slot-prop n']
-         ((obj/p:slot closure-value/closure-env-slot closure-env-id closure-id)
-          (:net state-with-closure))
-         state' (-> state-with-closure
-                    (assoc :net n')
-                    (h/add-props [env-slot-prop]))]
+         seeded (seed-closure-declaration state
+                                          closure-id
+                                          closure-env-id
+                                          lexical-env
+                                          closure-object)
+         [state' env-slot-prop] (attach-closure-environment seeded
+                                                            closure-id
+                                                            closure-env-id)]
      [(if name
         (remember-env-copy state'
                            parent-env
@@ -358,7 +429,7 @@
     (when (env/cell-binding? binding)
       binding)))
 
-(defn- define-binding
+(defn define-binding
   [state name binding]
   (if-let [existing (when (:reuse-existing-bindings? state)
                       (existing-cell-binding state name))]
@@ -393,110 +464,131 @@
     [(assoc state :env (env/bind-local (:env state) name operator))
      result-binding]))
 
-(defmulti g:compile
-  (fn [expr _env _state]
-    (common/expression-kind expr)))
-
-(defmethod g:compile :literal
-  [expr _env state]
+(defn compile-literal
+  [_compile* state expr]
   (h/new-cell state :literal (ast/value expr)))
 
-(defmethod g:compile :symbol
-  [expr _env state]
-  (common/compile-symbol state (ast/name expr)))
+(defn compile-symbol
+  [compile* state expr]
+  (common/compile-symbol-expression compile* state expr))
 
-(defmethod g:compile :sequence
-  [expr _env state]
-  (common/compile-seq g:compile state (ast/body expr)))
+(defn compile-sequence
+  [compile* state expr]
+  (common/compile-sequence-expression compile* state expr))
 
-(defmethod g:compile :let-cell
-  [expr _env state]
-  (common/compile-let-cell g:compile
-                           state
-                           (ast/names expr)
-                           (ast/body expr)))
+(defn compile-let-cell
+  [compile* state expr]
+  (common/compile-let-cell-expression compile* state expr))
 
-(defmethod g:compile :let
-  [expr _env state]
+(defn lower-let
+  [expr]
   (let [bindings (ast/bindings expr)
         names (mapv first bindings)
         binding-forms
         (mapv (fn [[name value-expr]]
                 (ast/app (ast/sym '->) value-expr (ast/sym name)))
               bindings)]
-    (common/compile-let-cell
-     g:compile
-     state
-     names
-     (apply ast/sequence*
-            (concat binding-forms [(ast/body expr)])))))
+    (ast/let-cell names
+                  (apply ast/sequence*
+                         (concat binding-forms [(ast/body expr)])))))
 
-(defmethod g:compile :when-topology
-  [expr _env state]
+(defn compile-let
+  [compile* state expr]
+  (compile* state (lower-let expr)))
+
+(defn compile-when-topology
+  [compile* state expr]
   (let [base-path (:path state)
-        [state' condition-binding] (g:compile (ast/condition expr)
-                                              (:env state)
-                                              (h/child state :condition))
+        [state' condition-binding] (compile* (h/child state :condition)
+                                             (ast/condition expr))
         condition-id (env/binding-id condition-binding)]
     (when-not condition-id
       (throw (ex-info "when condition must compile to a cell"
                       {:condition condition-binding})))
-    (lazy-topology/install-when-topology
+    (lazy-topology/install-when-topology-with
+     compile*
      (assoc state' :path base-path)
      condition-id
      (ast/body expr))))
 
-(defmethod g:compile :network
-  [expr _env state]
-  (compile-network state (ast/inputs expr) nil (ast/body expr)))
+(defn compile-network-form
+  [_compile* state expr]
+  (declare-closure state (ast/inputs expr) nil (ast/body expr)))
 
-(defmethod g:compile :compound
-  [expr _env state]
-  (compile-network state (ast/inputs expr) (ast/output expr) (ast/body expr)))
+(defn compile-compound
+  [_compile* state expr]
+  (declare-closure state (ast/inputs expr) (ast/output expr) (ast/body expr)))
 
-(defmethod g:compile :def-net
-  [expr _env state]
-  (let [[state' closure-binding] (compile-network state
-                                                   (ast/name expr)
-                                                   (ast/inputs expr)
-                                                   (ast/output expr)
-                                                   (ast/body expr))]
+(defn compile-def-net
+  [_compile* state expr]
+  (let [[state' closure-binding] (declare-closure state
+                                                  (ast/name expr)
+                                                  (ast/inputs expr)
+                                                  (ast/output expr)
+                                                  (ast/body expr))]
     (define-binding state' (ast/name expr) closure-binding)))
 
+(defn- constraint-env
+  [lexical-env inputs arg-ids]
+  (reduce (fn [scoped-env [sym id]]
+            (env/bind-local scoped-env sym (env/cell-binding id)))
+          (env/sub-env lexical-env)
+          (map vector inputs arg-ids)))
+
+(defn- constraint-argument-ids
+  [name inputs arg-bindings]
+  (let [arg-ids (mapv env/binding-id arg-bindings)]
+    (when-not (every? some? arg-ids)
+      (throw (ex-info "constraint arguments must compile to cells"
+                      {:constraint name :args arg-bindings})))
+    (when-not (= (count inputs) (count arg-ids))
+      (throw (ex-info "constraint application has wrong arity"
+                      {:constraint name
+                       :inputs inputs
+                       :arg-count (count arg-ids)})))
+    arg-ids))
+
+(defn- constraint-result
+  [calling-state body-state arg-ids body-binding]
+  [(assoc body-state :env (:env calling-state))
+   (env/cell-binding (or (peek arg-ids)
+                         (:binding/id body-binding)))])
+
 (defn- constraint-operator
-  [name lexical-env inputs body]
+  [compile* name lexical-env inputs body]
   (operator-value/operator-closure
    {:name name
+    :direct-compiler
+    (fn [compile-k state operand-forms _out-id k]
+      (cps/compile-args
+       compile-k state operand-forms
+       (fn [state' arg-bindings]
+         (let [arg-ids (constraint-argument-ids name inputs arg-bindings)
+               body-state (h/child
+                           (assoc state'
+                                  :env (constraint-env lexical-env inputs arg-ids))
+                           [:constraint name])]
+           (cps/call
+            compile-k body-state body
+            (fn [state'' body-binding]
+              (let [[state''' result]
+                    (constraint-result state' state'' arg-ids body-binding)]
+                (cps/continue k state''' result))))))))
     :direct-installer
     (fn [state operand-forms _out-id]
-      (let [[state' arg-bindings] (common/compile-args g:compile state operand-forms)
-            arg-ids (mapv env/binding-id arg-bindings)]
-        (when-not (every? some? arg-ids)
-          (throw (ex-info "constraint arguments must compile to cells"
-                          {:constraint name
-                           :args arg-bindings})))
-        (when-not (= (count inputs) (count arg-ids))
-          (throw (ex-info "constraint application has wrong arity"
-                          {:constraint name
-                           :inputs inputs
-                           :arg-count (count arg-ids)})))
-        (let [constraint-env
-              (reduce (fn [scoped-env [sym id]]
-                        (env/bind-local scoped-env sym (env/cell-binding id)))
-                      (env/sub-env lexical-env)
-                      (map vector inputs arg-ids))
-              [state'' body-binding]
-              (g:compile body
-                         constraint-env
-                         (h/child (assoc state' :env constraint-env)
-                                  [:constraint name]))]
-          [(assoc state'' :env (:env state'))
-           (env/cell-binding (or (peek arg-ids)
-                                 (:binding/id body-binding)))])))}))
+      (let [[state' arg-bindings] (common/compile-args compile* state operand-forms)
+            arg-ids (constraint-argument-ids name inputs arg-bindings)]
+        (let [constraint-env (constraint-env lexical-env inputs arg-ids)
+              [state'' body-binding] (compile*
+                                      (h/child (assoc state' :env constraint-env)
+                                               [:constraint name])
+                                      body)]
+          (constraint-result state' state'' arg-ids body-binding))))}))
 
-(defmethod g:compile :def-constraint
-  [expr _env state]
-  (let [operator (constraint-operator (ast/name expr)
+(defn compile-def-constraint
+  [compile* state expr]
+  (let [operator (constraint-operator compile*
+                                      (ast/name expr)
                                       (:env state)
                                       (ast/inputs expr)
                                       (ast/body expr))
@@ -505,49 +597,100 @@
                                             operator)]
     (define-operator-binding state' (ast/name expr) operator result-binding)))
 
-(defmethod g:compile :def
-  [expr _env state]
+(defn compile-def
+  [compile* state expr]
   (if-let [body (ast/body expr)]
-    (let [[state' body-binding] (g:compile body
-                                           (:env state)
-                                           (h/child state :body))]
+    (let [[state' body-binding] (compile* (h/child state :body) body)]
       (define-binding state' (ast/name expr) body-binding))
     (let [[state' binding] (h/new-cell state [:def (ast/name expr)])]
       (define-binding state' (ast/name expr) binding))))
 
-(defmethod g:compile :def-cell
-  [expr _env state]
-  (let [[state' closure-binding] (compile-network state
-                                                   (ast/name expr)
-                                                   (ast/inputs expr)
-                                                   nil
-                                                   (ast/body expr))]
+(defn compile-def-cell
+  [_compile* state expr]
+  (let [[state' closure-binding] (declare-closure state
+                                                  (ast/name expr)
+                                                  (ast/inputs expr)
+                                                  nil
+                                                  (ast/body expr))]
     (define-binding state' (ast/name expr) closure-binding)))
 
-(defmethod g:compile :application
-  [expr _env state]
-  (compile-application state (ast/operator expr) (ast/args expr)))
+(defn compile-application
+  [compile* state expr]
+  (common/compile-application
+   compile*
+   g:advance
+   (partial apply-operator compile*)
+   state
+   (ast/operator expr)
+   (ast/args expr)))
+
+(defn- compile-via-multifn
+  [_compile* state expr]
+  (dispatch/compile-expression state expr))
+
+(def compiler-dispatch
+  (common/compose-rules
+   (common/on (common/expression-kind? :literal) compile-literal)
+   (common/on (common/expression-kind? :symbol) compile-symbol)
+   (common/on (common/expression-kind? :sequence) compile-sequence)
+   (common/on (common/expression-kind? :let-cell) compile-let-cell)
+   (common/on (common/expression-kind? :let) compile-let)
+   (common/on (common/expression-kind? :when-topology) compile-when-topology)
+   (common/on (common/expression-kind? :network) compile-network-form)
+   (common/on (common/expression-kind? :compound) compile-compound)
+   (common/on (common/expression-kind? :def-net) compile-def-net)
+   (common/on (common/expression-kind? :def-constraint) compile-def-constraint)
+   (common/on (common/expression-kind? :def) compile-def)
+   (common/on (common/expression-kind? :def-cell) compile-def-cell)
+   (common/on (common/expression-kind? :application) compile-application)
+   compile-via-multifn))
+
+(def default-compiler
+  (common/make-compiler compiler-dispatch))
+
+(defmacro ^:private define-compile-adapter
+  [kind handler]
+  `(defmethod g:compile ~kind
+     [expr# env# state#]
+     (~handler default-compiler (assoc state# :env env#) expr#)))
+
+(define-compile-adapter :literal compile-literal)
+(define-compile-adapter :symbol compile-symbol)
+(define-compile-adapter :sequence compile-sequence)
+(define-compile-adapter :let-cell compile-let-cell)
+(define-compile-adapter :let compile-let)
+(define-compile-adapter :when-topology compile-when-topology)
+(define-compile-adapter :network compile-network-form)
+(define-compile-adapter :compound compile-compound)
+(define-compile-adapter :def-net compile-def-net)
+(define-compile-adapter :def-constraint compile-def-constraint)
+(define-compile-adapter :def compile-def)
+(define-compile-adapter :def-cell compile-def-cell)
+(define-compile-adapter :application compile-application)
 
 (defn compile-expr
   "Compile AST data into a network value and result cell."
   ([expr] (compile-expr expr (h/default-env)))
   ([expr env] (compile-expr expr env {}))
-  ([expr env {:keys [net seed path]
+  ([expr env {:keys [net seed path compiler]
               :or {net net/empty-net path []}
               :as opts}]
    (let [seed (or seed (ids/new-node-id))
-         [state result] (g:compile expr
-                                   env
-                                   {:net net
-                                    :env env
-                                    :seed seed
-                                    :path path
-                                    :props []
-                                    :applications []
-                                    :application-installer
-                                    (:application-installer opts)
-                                    :reuse-existing-bindings?
-                                    (:reuse-existing-bindings? opts)})]
+         compile* (or compiler default-compiler)
+         [state result] (compile*
+                         {:net net
+                          :env env
+                          :seed seed
+                          :path path
+                          :props []
+                          :applications []
+                          :compiler compile*
+                          :application-installer (:application-installer opts)
+                          :application/cell-declarer
+                          (:application/cell-declarer opts)
+                          :reuse-existing-bindings?
+                          (:reuse-existing-bindings? opts)}
+                         expr)]
      (common/compiled-map state result))))
 
 (defn compile-source
