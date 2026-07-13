@@ -104,12 +104,16 @@
 (defn- run-props [network props]
   (core/run-tasks (tq/enqueue-all tq/empty-queue props) network))
 
+(defn- compiled-binding-id
+  [compiled sym]
+  (env/resolve-binding-id (:net compiled) (:env compiled) sym))
+
 (defn- run-depth [depth]
   (let [compiled (main/compile-source map-chain-source)
         declared (core/run-tasks
                   (tq/enqueue-all tq/empty-queue (:props compiled))
                   (:net compiled))
-        closure-id (env/binding-id (env/lookup (:env compiled) 'map-chain))
+        closure-id (compiled-binding-id compiled 'map-chain)
         closure (net/network-cell-strongest declared closure-id)
         node-id (ids/new-node-id)
         out-id (ids/new-node-id)
@@ -295,7 +299,7 @@
         declared (core/run-tasks
                   (tq/enqueue-all tq/empty-queue (:props compiled))
                   (:net compiled))
-        closure-id (env/binding-id (env/lookup (:env compiled) 'map-chain))
+        closure-id (compiled-binding-id compiled 'map-chain)
         closure (net/network-cell-strongest declared closure-id)
         node-id (ids/new-node-id)
         value-id (ids/new-node-id)
@@ -337,7 +341,7 @@
     (is (< initial-count grown-count))
     (is (= grown-count (count (net/net-env rerun))))))
 
-(deftest generic-lexical-selection-feeds-retained-closure-frames
+(deftest fixed-lexical-application-does-not-redeclare-for-later-scope-candidates
   (let [step-id (ids/new-node-id)
         node-id (ids/new-node-id)
         out-id (ids/new-node-id)
@@ -357,9 +361,9 @@
         declared (core/run-tasks
                   (tq/enqueue-all tq/empty-queue (:props compiled))
                   (:net compiled))
-        map-id (env/binding-id (env/lookup (:env compiled) 'lexical-map-chain))
-        parent-id (env/binding-id (env/lookup (:env compiled) 'parent-step))
-        local-id (env/binding-id (env/lookup (:env compiled) 'local-step))
+        map-id (compiled-binding-id compiled 'lexical-map-chain)
+        parent-id (compiled-binding-id compiled 'parent-step)
+        local-id (compiled-binding-id compiled 'local-step)
         map-closure (net/network-cell-strongest declared map-id)
         parent (net/network-cell-strongest declared parent-id)
         local (net/network-cell-strongest declared local-id)
@@ -395,8 +399,8 @@
            (chain-values parent-net
                          (net/network-cell-strongest parent-net out-id))))
     (is (obj/accessor-network? (net/network-cell-strongest parent-net out-id)))
-    (is (= [2 4 6]
+    (is (= [2 3 4]
            (chain-values local-net
                          (net/network-cell-strongest local-net out-id))))
-    (is (< parent-size local-size))
+    (is (= parent-size local-size))
     (is (= local-size (count (net/net-env rerun))))))

@@ -2,6 +2,7 @@
   "Canonical stack-safe compiler-2 implementation."
   (:require [propagators.compiler-2.runtime.application :as application]
             [propagators.compiler-2.compiler.handlers :as handlers]
+            [propagators.compiler-2.compiler.dispatch :as dispatch]
             [propagators.compiler-2.compiler.predicates :as predicates]
             [propagators.compiler-2.compiler.basis :as h]
             [propagators.compiler-2.language.parser :as parser]
@@ -33,7 +34,8 @@
    (cps/on predicates/def-cell? handlers/compile-def-cell)
    handlers/compile-application))
 
-(def compile* (cps/make-compiler compiler-dispatch))
+(def compile* (dispatch/install-default-compiler!
+               (cps/make-compiler compiler-dispatch)))
 (def default-compiler compile*)
 
 (defn- prepare-environment

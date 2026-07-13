@@ -23,10 +23,11 @@
         value-id (h/node-id state [:lexical-access sym :value])
         network (h/ensure-cell (:net state) value-id)
         [props compiled]
-        ((env/p:lexical-value [:compiler-2 (:seed state) (:path state) sym]
-                              sym
-                              (:env state)
-                              value-id)
+        ((env/p:local-first-lexical-value
+          [:compiler-2 (:seed state) (:path state) sym]
+          sym
+          (:env state)
+          value-id)
          network)]
     (cps/continue k
                   (-> state

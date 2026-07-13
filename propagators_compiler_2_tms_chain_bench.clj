@@ -19,6 +19,7 @@
             [propagators.core :as core]
             [propagators.datastructures.behavior.core :as behavior]
             [propagators.datastructures.event :as event]
+            [propagators.datastructures.scope-source :as scope-source]
             [propagators.datastructures.tms.distributed :as tms]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
@@ -60,7 +61,8 @@
       (compile/install-and-run (protocol/install-behavior-protocol))))
 
 (defn current-value [network id]
-  (let [answer (net/network-cell-strongest network id)]
+  (let [answer (scope-source/unwrap
+                (net/network-cell-strongest network id))]
     (if (value/unusable? answer)
       answer
       (tms/distributed-base-value answer))))
@@ -74,7 +76,7 @@
                   (chain-source depth)
                   {:net (protocol-net)})
         network (nb/run-propagators (:net compiled) (:props compiled))
-        id-of #(env/binding-id (env/lookup (:env compiled) %))
+        id-of #(env/resolve-binding-id network (:env compiled) %)
         prepared {:depth depth
                   :network network
                   :out-id (:cell compiled)
@@ -86,7 +88,7 @@
 (defn transition [{:keys [network out-id retract-id bring-id]}]
   (let [retracted (seed-and-run network retract-id 1)
         brought (seed-and-run retracted bring-id 2)]
-    (assert (value/nothing? (net/network-cell-strongest retracted out-id)))
+    (assert (value/nothing? (current-value retracted out-id)))
     (assert (= (current-value network out-id)
                (current-value brought out-id)))
     {:retracted retracted :brought brought}))
@@ -114,8 +116,7 @@
 (defn sample [{:keys [network retract-id bring-id] :as prepared}]
   (let [[retract-ns retracted] (elapsed #(seed-and-run network retract-id 1))
         [bring-ns brought] (elapsed #(seed-and-run retracted bring-id 2))]
-    (assert (value/nothing?
-             (net/network-cell-strongest retracted (:out-id prepared))))
+    (assert (value/nothing? (current-value retracted (:out-id prepared))))
     (assert (= (inc (:depth prepared))
                (current-value brought (:out-id prepared))))
     {:retract-ns retract-ns :bring-ns bring-ns}))
@@ -169,7 +170,7 @@
                   (retained-update-source update-count)
                   {:net (protocol-net)})
         network (nb/run-propagators (:net compiled) (:props compiled))
-        id-of #(env/binding-id (env/lookup (:env compiled) %))]
+        id-of #(env/resolve-binding-id network (:env compiled) %)]
     {:network network
      :out-id (:cell compiled)
      :control-ids (mapv (comp id-of control-symbol)

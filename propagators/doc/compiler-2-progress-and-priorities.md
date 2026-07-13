@@ -87,6 +87,112 @@ No current full-suite green receipt exists. A fresh focused event/TMS run was
 started and deliberately stopped so the architecture could be discussed before
 more long-running evaluation.
 
+### 2026-07-13 event/TMS checkpoint
+
+Behavior-history arithmetic integration is now reader-discarded in
+`propagators.compile-2-test` and remains explicitly deferred. Its data
+structures and isolated operator tests are not removed.
+
+The supported event gate is green:
+
+- seven event arithmetic, update, retraction, switch, DAG, and sync-chain tests;
+- 15 assertions, no failures or errors;
+- 3.49 seconds for the focused gate;
+- the 50-stage update chain alone completes in about 1.43 seconds.
+
+The first seven non-behavior TMS checks are also green with 27 assertions:
+
+- default distributed premise operators;
+- the behavior/TMS public compiler entrypoint;
+- retained TMS operator declaration;
+- distributed switch/forward sync;
+- sub-environment TMS storage;
+- premise epoch belief/retraction;
+- compound-pair TMS insertion.
+
+Their individual runtimes range from 0.03 to 23.1 seconds. The slower passing
+tests are distributed switch at 23.1 seconds and sub-environment TMS at 17.8
+seconds.
+
+A final combined receipt for the seven event tests, three TMS smoke tests, and
+the direct/fallback lexical shape checks is green: 12 tests, 32 assertions, no
+failures or errors, in 14.26 seconds.
+
+Two stale expectations were corrected rather than changing runtime semantics:
+
+- compiler results are lexical scope values, so tests inspect their canonical
+  binding address when they need reducer content or slots;
+- an environment-bound TMS operator is a retained application, not a
+  compile-time static operator, matching the rule that the compiler declares
+  application topology and runtime resolves the operator cell.
+
+The accepted fixed-parent traversal makes the dynamic premise-closure test
+complete and exposes the application declaration tradeoff directly:
+
+```text
+compiler-2-redefined-premise-closure-keeps-declared-application-topology
+12.9 seconds, passing
+
+result: 6 -> nothing -> 6 -> 6
+```
+
+The first `op` declaration owns the application topology. The later declaration
+can add premise evidence, but does not rebuild the already-declared graph. This
+is now an explicit compiler contract: fixed lexical addressing trades dynamic
+partial repair of existing application topology for bounded declaration and
+local reasoning. A future repair feature must be an explicit topology
+redeclaration/effect, not an accidental consequence of reducer lookup.
+
+### Lexical performance evidence
+
+Imported legacy environments and compiler-created frames record their canonical
+binding addresses. Compiler frames use local-first fixed parent traversal and
+do not eagerly copy the complete accumulated reducer. Reads still produce scope
+values with the declaring source, active child chain, binding address, and
+dependencies; no value is unwrapped inside arithmetic propagators.
+
+Delayed topology carries those addresses as declarative runtime name-binding
+effects. Retained application and lazy guards consult the canonical address, so
+they do not wake on a scope envelope whose base value is still `nothing`.
+Compatibility `p:sub-env` remains the eager composition of `p:scope-frame` and
+`p:inherit-bindings`; only compiler-created fixed frames take the new path.
+
+The focused closure/composition/CPS/organization/list gate is green: 118
+assertions, no failures or errors. A 40-frame declaration comparison measured
+about 1.14 seconds and 603 propagators for fixed scope frames versus 8.02
+seconds and 723 propagators with eager reducer inheritance, about a sevenfold
+wall-clock improvement in that diagnostic. The recursive closure depth-one
+case completes in about 438 ms after using the canonical condition address;
+before that guard fix it exceeded 15 seconds and kept declaring frames.
+
+A ten-second additive activation profile of the remaining P1 path reports:
+
+| Propagator | Calls | Exclusive time |
+| --- | ---: | ---: |
+| `[:compiler-2/lexical-projection :grouped]` | 2,784 | 7.57 s |
+| `[:compound-object/network-slot :env/bindings]` | 40 | 1.95 s |
+| `:compiler-2/lexical-merge` | 17 | 0.06 s |
+
+The fixed-frame change removes that eager lexical copying from the compiler
+path, but does not eliminate all distributed-TMS costs. The ordinary
+distributed closure-output test passes in about 42.9 seconds and the distributed
+premise chain passes in about 81.9 seconds. A full `propagators.compile-2-test`
+run was stopped after more than seven minutes without a failure report.
+
+The representative chained-GUR benchmark has zero cell/propagator growth after
+retract/bring-in at depths 1, 5, and 10. One-sample update times were:
+
+| Depth | Retract | Bring in | Cells | Propagators |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 16.6 ms | 44.3 ms | 183 | 86 |
+| 5 | 24.1 ms | 66.9 ms | 259 | 130 |
+| 10 | 39.8 ms | 112.0 ms | 354 | 185 |
+
+Depth 50 did not finish preparation within two minutes. Therefore the limited
+scope is proven useful, but widening fixed addressing into ambiguous/dynamic
+scopes is deferred until the remaining distributed-TMS construction hot path is
+identified.
+
 The CPS compatibility test compares semantic results with the deprecated
 synchronous compiler. Internal result IDs, propagator counts, and application
 counts are intentionally not parity contracts because the live lexical compiler
@@ -120,21 +226,21 @@ supported path with a known deferred subsystem.
 
 **Dependencies:** none. This is the first task.
 
-### P1: Fix dynamic premise-closure application correctness
+### P1: Keep application topology repair explicit
 
-**Problem:** the redefined premise-closure scenario does not yet consistently
-produce the active definition's output. Construction has progressed far enough
-to retain premise slots, but application/output delivery remains incomplete.
+**Decision:** a compiled application keeps the first lexical binding address it
+resolved. Later same-name declarations do not implicitly rebuild that topology.
 
-**Action:** trace one premise closure from its operator cell through
-`p:apply-closure`, declared frame topology, result message, and final TMS slot.
-Fix the first boundary that loses the selected definition or output. Do not add
-a compiler special handler or unwrap scoped values to make the assertion pass.
+**Action:** preserve the passing fixed-topology test. If dynamic repair becomes
+required, introduce a declarative topology-replacement effect with an explicit
+identity and lifecycle. Do not restore eager reducer inheritance or add a
+compiler special handler to obtain repair accidentally.
 
-**Significance:** critical. This is a real TMS correctness defect and remains in
-scope even while behavior arithmetic is deferred.
+**Significance:** accepted limitation for the current compiler; high only if
+dynamic same-name redefinition becomes a supported surface guarantee.
 
-**Dependencies:** P0 identifies the smallest reproducible failing TMS test.
+**Dependencies:** a future repair design depends on P4's explicit topology
+realization contract.
 
 ### P2: Identify the first incorrect writer in composed sync
 
@@ -254,6 +360,27 @@ failure counts must not be treated as a current baseline.
 | 5 | P4 retained application realization | P1, P2 | graph and runtime write contract agree |
 | 6 | P5 commit/effect integration | P0, P4 for GC | runtime reaches idle across all phases |
 | 7 | P6 full verification | P0-P3 | focused, runtime, full-suite, and benchmark receipts |
+
+## Lexical-model decision: accepted limited scope
+
+The approved additive redesign splits the old eager operation into two
+declarations:
+
+1. `p:scope-frame` declares parent, scope, chain, depth, and local binding
+   structure;
+2. `p:inherit-bindings` retains the accumulated reducer copy as an explicit
+   compatibility operation;
+3. compatibility `p:sub-env` remains their eager composition;
+4. compiler-declared fixed frames use `p:scope-frame` and canonical parent
+   addresses;
+5. unknown live frames use structural local-first access; legacy materialized
+   frames retain their compatible lookup path.
+
+This keeps lexical results scope-dependent and does not change the scheduler or
+runtime value model. It deliberately gives up implicit partial repair for an
+already-declared application. The evidence above is sufficient to retain this
+limited compiler-frame path, but not sufficient to apply fixed addressing to
+all ambiguous or runtime-created scopes.
 
 ## Deferred behavior-history arithmetic
 

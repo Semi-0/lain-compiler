@@ -16,9 +16,20 @@
   [state expr]
   (g:compile expr (:env state) state))
 
+(defonce ^:private default-compiler* (atom compile-expression))
+
+(defn install-default-compiler!
+  "Register the production compiler used by delayed public factories."
+  [compile*]
+  (reset! default-compiler* compile*)
+  compile*)
+
+(defn default-compiler
+  [state expr]
+  (@default-compiler* state expr))
+
 (defn state-compiler
   "Return the locally selected compiler or the compatibility dispatcher."
   [state]
-  (or (:compiler state) compile-expression))
-
+  (or (:compiler state) default-compiler))
 

@@ -287,11 +287,12 @@
         (h/add-props prop-ids))))
 
 (defn declare-child-environment
-  [state role]
+  [state role local-names]
   (let [child-id (h/node-id state role)
         state' (update state :net h/ensure-cell child-id)]
     [(-> state'
-         (install-env-topology (env/p:sub-env (:env state) child-id))
+         (install-env-topology
+          (env/p:scope-frame (:env state) child-id local-names))
          (assoc :env child-id))
      child-id]))
 
@@ -306,7 +307,7 @@
 
 (defn declare-local-cells
   [state role names]
-  (let [[state' child-id] (declare-child-environment state role)]
+  (let [[state' child-id] (declare-child-environment state role names)]
     (reduce
      (fn [[state bindings] name]
        (let [binding-id (h/stable-node-id :compiler-2 :binding child-id name)
