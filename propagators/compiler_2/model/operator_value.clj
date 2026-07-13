@@ -124,6 +124,7 @@
   [{:keys [name
            input-selector
            output-selector
+           compiler-activate
            activate
            plan
            messages
@@ -168,8 +169,7 @@
       :input-selector input-selector
       :install install
       :static-installer install
+      :compiler-activate compiler-activate
       :activate activate
       :output-selector select-output
       :contextual? contextual?})))
-
-

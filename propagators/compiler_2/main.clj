@@ -3,13 +3,13 @@
   (:require [propagators.compiler-2.model.application-value :as application-value]
             [propagators.compiler-2.operators.behavior :as behavior]
             [propagators.compiler-2.model.closure-value :as closure-value]
-            [propagators.compiler-2.compiler.core :as compiler]
-            [propagators.compiler-2.core :as core]
+            [propagators.compiler-2.cps-core :as compiler]
+            [propagators.compiler-2.deprecated.core :as core]
             [propagators.compiler-2.language.parser :as parser]))
 
-(def compiler-result-key core/compiler-result-key)
-(def compiler-props-key core/compiler-props-key)
-(def compiler-applications-key core/compiler-applications-key)
+(def compiler-result-key compiler/compiler-result-key)
+(def compiler-props-key compiler/compiler-props-key)
+(def compiler-applications-key compiler/compiler-applications-key)
 
 (def closure-runtime-slot closure-value/closure-runtime-slot)
 (def closure-env-slot closure-value/closure-env-slot)

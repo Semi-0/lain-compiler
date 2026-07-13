@@ -15,6 +15,7 @@
             [propagators.datastructures.scope-source :as scope-source]
             [propagators.datastructures.tms.distributed :as tms]
             [propagators.ids :as ids]
+            [propagators.layered :as layered]
             [propagators.message :refer [message]]
             [propagators.network :as net]
             [propagators.network-builder :as nb]
@@ -152,6 +153,28 @@
            (add-props installed-prop-ids))
        (env/cell-binding out-id)])))
 
+(defn- list-topology
+  [network element-ids out-id]
+  (let [state {:net network
+               :seed [:compiler-2/list out-id]
+               :path []
+               :props []
+               :applications []}
+        [compiled _binding]
+        (declare-list state (mapv env/cell-binding element-ids) out-id)]
+    {:net (:net compiled)
+     :props (:props compiled)}))
+
+(defn list-application-effects
+  "Declare one reactive cons topology for an ordinary runtime application."
+  [network element-ids out-id]
+  ((requiring-resolve
+    'propagators.compiler-2.runtime.topology-effects/declare-once)
+   network
+   [:list out-id]
+   out-id
+   #(list-topology % element-ids out-id)))
+
 (defn- compile-list-k
   [compile-k state operand-forms out-id k]
   (let [base-path (:path state)
@@ -174,6 +197,9 @@
   []
   (operator-value/operator-closure
    {:name 'list
+    :compiler-activate
+    (fn [_compile* network _context-id arg-ids out-id]
+      (list-application-effects network arg-ids out-id))
     :direct-compiler compile-list-k
     :direct-installer
     (fn [state operand-forms out-id]
@@ -192,15 +218,16 @@
   [slot-key installer name]
   (letfn [(plan [arg-ids out-id]
             (let [arg-ids (vec arg-ids)
-                  [value-id collection-id result-id]
+                  [value-id collection-id result-id read?]
                   (case (count arg-ids)
-                    1 [out-id (first arg-ids) out-id]
-                    2 [(first arg-ids) (second arg-ids) (second arg-ids)]
+                    1 [out-id (first arg-ids) out-id true]
+                    2 [(first arg-ids) (second arg-ids) (second arg-ids) false]
                     (throw (ex-info (str name " expects collection or value+collection")
                                     {:arg-ids arg-ids})))]
               {:value-id value-id
                :collection-id collection-id
-               :result-id result-id}))]
+               :result-id result-id
+               :read? read?}))]
     (operator-value/operator-closure
      {:name name
       :output-selector (fn [arg-ids fallback-id]
@@ -208,9 +235,17 @@
                            (second (vec arg-ids))
                            fallback-id))
       :install (fn [network arg-ids out-id]
-                 (let [{:keys [value-id collection-id result-id]} (plan arg-ids out-id)
-                       [id network'] ((installer value-id collection-id) network)]
-                   [network' [id] result-id]))
+                 (let [{:keys [value-id collection-id result-id read?]}
+                       (plan arg-ids out-id)]
+                   (if read?
+                     (let [[cell-id prop-ids network']
+                           (obj/install-slot-access network
+                                                    slot-key
+                                                    collection-id
+                                                    value-id)]
+                       [network' prop-ids cell-id])
+                     (let [[id network'] ((installer value-id collection-id) network)]
+                       [network' [id] result-id]))))
       :activate (fn [network _context-id arg-ids out-id]
                   (let [{:keys [value-id collection-id]} (plan arg-ids out-id)]
                     (slot-messages slot-key value-id collection-id network)))})))
@@ -232,16 +267,17 @@
   []
   (letfn [(plan [arg-ids out-id]
             (let [arg-ids (vec arg-ids)
-                  [slot-key-id value-id collection-id result-id]
+                  [slot-key-id value-id collection-id result-id read?]
                   (case (count arg-ids)
-                    2 [(first arg-ids) out-id (second arg-ids) out-id]
-                    3 [(first arg-ids) (second arg-ids) (nth arg-ids 2) (nth arg-ids 2)]
+                    2 [(first arg-ids) out-id (second arg-ids) out-id true]
+                    3 [(first arg-ids) (second arg-ids) (nth arg-ids 2) (nth arg-ids 2) false]
                     (throw (ex-info "p:slot expects key+collection or key+value+collection"
                                     {:arg-ids arg-ids})))]
               {:slot-key-id slot-key-id
                :value-id value-id
                :collection-id collection-id
-               :result-id result-id}))]
+               :result-id result-id
+               :read? read?}))]
     (operator-value/operator-closure
      {:name 'p:slot
       :output-selector (fn [arg-ids fallback-id]
@@ -249,14 +285,23 @@
                            (nth (vec arg-ids) 2)
                            fallback-id))
       :install (fn [network arg-ids out-id]
-                 (let [{:keys [slot-key-id value-id collection-id result-id]}
+                 (let [{:keys [slot-key-id value-id collection-id result-id read?]}
                        (plan arg-ids out-id)
                        slot-key (net/network-cell-strongest network slot-key-id)]
                    (if (value/unusable? slot-key)
                      [network [] result-id]
-                     (let [[id network'] ((obj/p:slot slot-key value-id collection-id)
-                                          network)]
-                       [network' [id] result-id]))))
+                     (if read?
+                       (let [[cell-id prop-ids network']
+                             (obj/install-slot-access network
+                                                      slot-key
+                                                      collection-id
+                                                      value-id)]
+                         [network' prop-ids cell-id])
+                       (let [[id network'] ((obj/p:slot slot-key
+                                                       value-id
+                                                       collection-id)
+                                            network)]
+                         [network' [id] result-id])))))
       :activate (fn [network _context-id arg-ids out-id]
                   (let [{:keys [slot-key-id value-id collection-id]}
                         (plan arg-ids out-id)]
@@ -381,15 +426,10 @@
 
 (defn- dependency-sources
   [v]
-  (let [scope-unwrapped (scope-source/unwrap v)
-        scope-source (when (scope-source/scope-value? v)
-                       {:dependency/type :compiler-2/scope-source
-                        :scope/id (scope-source/source-scope v)
-                        :scope/chain (scope-source/context-chain v)})]
-    (cond-> (if (dependency/dependency-value? scope-unwrapped)
-              (dependency/sources scope-unwrapped)
-              #{})
-      scope-source (conj scope-source))))
+  (let [scope-unwrapped (scope-source/unwrap v)]
+    (if (dependency/dependency-value? scope-unwrapped)
+      (dependency/sources scope-unwrapped)
+      #{})))
 
 (defn contextual-primitive-operator
   "Primitive wrapper that reads the implicit compiler-2 context cell and emits
@@ -496,11 +536,7 @@
 
 (defn- sync-messages
   [network a b]
-  (let [a-update (sync-update network a)
-        b-update (sync-update network b)]
-    (cond-> []
-      (some? a-update) (conj (message b a-update))
-      (some? b-update) (conj (message a b-update)))))
+  (layered/bidirectional-transport-messages sync-update network a b))
 
 (declare forward-sync-messages)
 
@@ -520,10 +556,7 @@
 
 (defn- forward-sync-messages
   [network a b]
-  (let [a-update (sync-update network a)]
-    (if (some? a-update)
-      [(message b a-update)]
-      [])))
+  (layered/forward-transport-messages sync-update network a b))
 
 (defn- sync-chain-ids
   [name arg-ids]
@@ -533,17 +566,18 @@
                       {:arg-ids arg-ids})))
     arg-ids))
 
+(defn- sync-output-id
+  [arg-ids fallback-id]
+  [(or (peek (vec arg-ids)) fallback-id)])
+
 (defn sync-operator []
   (operator-value/propagator-operator
    {:name '->
-    :output-selector (fn [arg-ids fallback-id]
-                       (let [arg-ids (sync-chain-ids '-> arg-ids)]
-                         [(or (peek arg-ids) fallback-id)]))
+    :output-selector sync-output-id
     :input-selector (fn [arg-ids _fallback-id _context-id]
-                      (pop (sync-chain-ids '-> arg-ids)))
-    :activate (fn [current-net inputs outputs _context-id]
-                (let [chain (conj (vec inputs) (first outputs))]
-                  (chain-forward-sync-messages current-net chain)))}))
+                      (sync-chain-ids '-> arg-ids))
+    :activate (fn [current-net inputs _outputs _context-id]
+                (chain-forward-sync-messages current-net inputs))}))
 
 (defn- switch-ids
   [arg-ids fallback-id]
@@ -697,9 +731,7 @@
 (defn bi-sync-operator []
   (operator-value/propagator-operator
    {:name '<->
-    :output-selector (fn [arg-ids fallback-id]
-                       (let [arg-ids (sync-chain-ids '<-> arg-ids)]
-                         [(or (peek arg-ids) fallback-id)]))
+    :output-selector sync-output-id
     :input-selector (fn [arg-ids _fallback-id _context-id]
                       (sync-chain-ids '<-> arg-ids))
     :activate (fn [current-net inputs _outputs _context-id]
@@ -774,5 +806,3 @@
 (defn legacy-central-tms-env []
   ((requiring-resolve
     'propagators.compiler-2.legacy/legacy-central-tms-env)))
-
-

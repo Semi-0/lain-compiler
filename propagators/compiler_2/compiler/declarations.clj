@@ -13,7 +13,8 @@
             [propagators.compiler-common.cps :as cps]
             [propagators.compiler-common.core :as common]
             [propagators.datastructures.compound-object :as obj]
-            [propagators.ids :as ids]))
+            [propagators.ids :as ids]
+            [propagators.stdlib.prop :as stdlib-prop]))
 
 (defn- install-application-propagator
   [state compile* app-id operator-ast operator-id result-id context-id]
@@ -160,23 +161,25 @@
   [compile* state operator-id closure-info arg-ids out-id]
   (when-let [{:keys [input-ids targets]}
              (compiler-app/closure-call-plan closure-info arg-ids out-id)]
-    (let [frame-env (compiler-app/closure-body-env
-                     (closure-value/closure-env closure-info)
-                     (closure-value/closure-inputs closure-info)
-                     targets
-                     input-ids)
-          [state' frame-binding] (h/new-cell state :closure-frame-env frame-env)
-          frame-id (env/binding-id frame-binding)
+    (let [frame-id (h/node-id state :closure-frame-env)
+          [env-props prepared-network]
+          (compiler-app/declare-closure-environment
+           (:net state)
+           (closure-value/closure-env closure-info)
+           frame-id
+           (closure-value/closure-inputs closure-info)
+           targets
+           input-ids)
           [prop-id network'] ((closure-frame/p:apply-closure-with
                                compile* operator-id frame-id)
-                              (:net state'))
+                              prepared-network)
           result-id (if (seq (closure-output-symbols
                               (closure-value/closure-output closure-info)))
                       (second (first targets))
                       out-id)]
-      [(-> state'
+      [(-> state
            (assoc :net network')
-           (h/add-props [prop-id]))
+           (h/add-props (conj (vec env-props) prop-id)))
        (env/cell-binding result-id)])))
 
 (defn- install-retained-lexical-closure
@@ -190,6 +193,8 @@
          (h/add-props [prop-id]))
      (env/cell-binding out-id)]))
 
+(declare declare-runtime-cell-application-bindings)
+
 (defn declare-retained-cell-application-bindings
   [compile* operator-binding arg-bindings state out-id]
   (let [arg-ids (argument-ids arg-bindings)
@@ -200,8 +205,8 @@
                                              arg-ids out-id)
             (throw (ex-info "retained closure arguments do not match closure"
                             {:operator-id operator-id :arg-ids arg-ids})))
-        (install-retained-lexical-closure compile* state operator-id
-                                          arg-ids out-id))))
+        (declare-runtime-cell-application-bindings
+         compile* operator-binding arg-bindings state out-id))))
 
 (defn declare-retained-cell-application
   [compile* operator-binding operand-forms state out-id]
@@ -274,59 +279,55 @@
     (throw (ex-info "application operator is not callable"
                     {:operator operator-binding}))))
 
-(defn- copied-env-value
-  [parent-env locals]
-  (env/bind-locals parent-env locals))
+(defn- install-env-topology
+  [state installer]
+  (let [[prop-ids network] (installer (:net state))]
+    (-> state
+        (assoc :net network)
+        (h/add-props prop-ids))))
 
-(defn- copied-closure-object
-  [env body inputs output]
-  (closure-value/closure-object env
-                                body
-                                inputs
-                                output
-                                (env/scope-id env)))
+(defn declare-child-environment
+  [state role]
+  (let [child-id (h/node-id state role)
+        state' (update state :net h/ensure-cell child-id)]
+    [(-> state'
+         (install-env-topology (env/p:sub-env (:env state) child-id))
+         (assoc :env child-id))
+     child-id]))
 
-(defn- refresh-env-copies
-  [state parent-env]
-  (reduce
-   (fn [state {:keys [source-scope env-id closure-id locals body inputs output
-                      prop-id]}]
-     (if (= source-scope (env/scope-id parent-env))
-       (let [env' (copied-env-value parent-env locals)]
-         (-> state
-             (update :net h/seed-cell env-id env')
-             (update :net h/seed-cell closure-id
-                     (copied-closure-object env' body inputs output))
-             (h/add-props [prop-id])))
-       state))
-   state
-   (:compiler-2/env-copies state)))
+(defn declare-local
+  [state sym binding-id]
+  (install-env-topology state (env/p:declare-local sym (:env state) binding-id)))
 
-(defn- remember-env-copy
-  [state parent-env env-id closure-id locals body inputs output prop-id]
-  (update state
-          :compiler-2/env-copies
-          conj
-          {:source-scope (env/scope-id parent-env)
-           :env-id env-id
-           :closure-id closure-id
-           :locals locals
-           :body body
-           :inputs inputs
-           :output output
-           :prop-id prop-id}))
+(defn declare-fixed-local
+  [state sym binding-id]
+  (install-env-topology state
+                        (env/p:declare-fixed-local sym (:env state) binding-id)))
 
-(defn closure-locals
+(defn declare-local-cells
+  [state role names]
+  (let [[state' child-id] (declare-child-environment state role)]
+    (reduce
+     (fn [[state bindings] name]
+       (let [binding-id (h/stable-node-id :compiler-2 :binding child-id name)
+             state' (-> state
+                        (update :net h/ensure-cell binding-id)
+                        (declare-fixed-local name binding-id))]
+         [state' (assoc bindings name (env/cell-binding binding-id))]))
+     [state' {}]
+     names)))
+
+(defn ^:deprecated closure-locals
   [name closure-id]
   (if name {name (env/compound-binding closure-id)} {}))
 
-(defn seed-closure-declaration
+(defn ^:deprecated seed-closure-declaration
   [state closure-id closure-env-id lexical-env closure-object]
   (-> state
       (update :net h/seed-cell closure-env-id lexical-env)
       (update :net h/seed-cell closure-id closure-object)))
 
-(defn attach-closure-environment
+(defn ^:deprecated attach-closure-environment
   [state closure-id closure-env-id]
   (let [[prop-id network]
         ((obj/p:slot closure-value/closure-env-slot closure-env-id closure-id)
@@ -342,77 +343,41 @@
   ([state name inputs output body]
    (let [{closure-output :output closure-body :body}
          (normalize-closure-output (hidden-return-symbol state) output body)
-         parent-env (:env state)
          closure-id (h/node-id state :closure)
-         locals (closure-locals name closure-id)
-         lexical-env (copied-env-value parent-env locals)
-         closure-object (copied-closure-object lexical-env
-                                               closure-body
-                                               inputs
-                                               closure-output)
-         closure-env-id (h/node-id state :closure-env)
+         closure-object (closure-value/closure-object (:env state)
+                                                      closure-body
+                                                      inputs
+                                                      closure-output
+                                                      (:env state))
          closure-binding (env/compound-binding closure-id)
-         seeded (seed-closure-declaration state
-                                          closure-id
-                                          closure-env-id
-                                          lexical-env
-                                          closure-object)
-         [state' env-slot-prop] (attach-closure-environment seeded
-                                                            closure-id
-                                                            closure-env-id)]
-     [(if name
-        (remember-env-copy state'
-                           parent-env
-                           closure-env-id
-                           closure-id
-                           locals
-                           closure-body
-                           inputs
-                           closure-output
-                           env-slot-prop)
-        state')
+         state' (update state :net h/seed-cell closure-id closure-object)]
+     [state'
       closure-binding])))
-
-(defn- existing-cell-binding
-  [state name]
-  (let [binding (env/lookup (:env state) name)]
-    (when (env/cell-binding? binding)
-      binding)))
 
 (defn define-binding
   [state name binding]
-  (if-let [existing (when (:reuse-existing-bindings? state)
-                      (existing-cell-binding state name))]
-    (let [existing-id (env/binding-id existing)
-          source-id (env/binding-id binding)
-          value (when source-id
-                  (h/strongest-or-nothing (:net state) source-id))
-          net' (if (and source-id
-                        (not (value/unusable? value)))
-                 (h/seed-cell (:net state) existing-id value)
-                 (:net state))]
-      [(-> state
-           (assoc :net net'
-                  :env (env/bind-local (:env state) name existing))
-           (refresh-env-copies (env/bind-local (:env state) name existing)))
-       existing])
-    (let [env' (env/bind-local (:env state) name binding)]
-      [(-> state
-           (assoc :env env')
-           (refresh-env-copies env'))
-       binding])))
+  (let [source-id (env/binding-id binding)]
+    (when-not source-id
+      (throw (ex-info "definition must declare an addressed binding"
+                      {:name name :binding binding})))
+    (let [target-id (h/stable-node-id :compiler-2 :definition
+                                      (:env state) name source-id)
+          target-binding (if (env/compound-binding? binding)
+                           (env/compound-binding target-id)
+                           (env/cell-binding target-id))
+          state' (update state :net h/ensure-cell target-id)
+          state'' (if (= source-id target-id)
+                    state'
+                    (let [[prop-id network]
+                          ((stdlib-prop/id source-id target-id) (:net state'))]
+                      (-> state'
+                          (assoc :net network)
+                          (h/add-props [prop-id]))))]
+      [(declare-fixed-local state'' name target-id) target-binding])))
 
 (defn- define-operator-binding
   [state name operator result-binding]
-  (if-let [existing (when (:reuse-existing-bindings? state)
-                      (existing-cell-binding state name))]
-    (let [existing-id (env/binding-id existing)]
-      [(assoc state
-              :net (h/seed-cell (:net state) existing-id operator)
-              :env (env/bind-local (:env state) name existing))
-       existing])
-    [(assoc state :env (env/bind-local (:env state) name operator))
-     result-binding]))
+  (define-binding state name result-binding))
 
 (defn lower-let
   [expr]

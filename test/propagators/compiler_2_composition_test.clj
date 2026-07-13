@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [propagators.compiler-2.runtime.application :as application]
             [propagators.compiler-2.language.ast :as ast]
-            [propagators.compiler-2.compiler.core :as cps-core]
+            [propagators.compiler-2.cps-core :as cps-core]
             [propagators.compiler-2.core :as compiler-core]
             [propagators.compiler-2.compiler.dispatch :as compiler-dispatch]
             [propagators.compiler-2.model.env :as env]
@@ -11,9 +11,12 @@
             [propagators.compiler-2.predicate-core :as predicate-core]
             [propagators.compiler-behavior.core :as behavior-core]
             [propagators.compiler-behavior.main :as behavior-compiler]
+            [propagators.compiler-common.cps :as cps]
             [propagators.compiler-common.core :as common]
             [propagators.datastructures.behavior :as behavior]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.dependency :as dependency]
+            [propagators.datastructures.scope-source :as scope-source]
             [propagators.ids :as ids]
             [propagators.network :as net]
             [propagators.network-builder :as nb]))
@@ -23,19 +26,30 @@
                         ast/value-slot v}))
 
 (defn- compiler-with-custom [calls]
-  (common/make-compiler
-   (common/compose-rules
-    (common/on (common/expression-kind? :composition-test)
-               (fn [compile* state expr]
+  (cps/make-compiler
+   (cps/compose-rules
+    (cps/on (common/expression-kind? :composition-test)
+               (fn [compile-k state expr k]
                  (swap! calls inc)
-                 (compile* state (ast/lit (ast/value expr)))))
-    compiler-core/compiler-dispatch)))
+                 (cps/call compile-k state (ast/lit (ast/value expr)) k)))
+    cps-core/compiler-dispatch)))
 
 (defn- run-compiled [compiled]
   (nb/run-propagators (:net compiled) (:props compiled)))
 
 (defn- strongest [network id]
   (net/network-cell-strongest network id))
+
+(defn- semantic-value [network id]
+  (loop [v (strongest network id)]
+    (cond
+      (scope-source/scope-value? v)
+      (recur (scope-source/base-value v))
+
+      (dependency/dependency-value? v)
+      (recur (dependency/base-value v))
+
+      :else v)))
 
 (deftest public-multifn-identity-is-preserved
   (is (instance? clojure.lang.MultiFn compiler/g:compile))
@@ -55,13 +69,15 @@
                   (throw (ex-info "generic compiler was called" {})))]
     (let [compiled (compiler/compile-source "((:: [x] (+ x 1)) 4)")
           result-net (run-compiled compiled)]
-      (is (= 5 (strongest result-net (:cell compiled))))))
+      (is (= 5 (semantic-value result-net (:cell compiled))))))
   (let [source "(let [x 1] (+ x 2))"
         seed :cps-core-parity
         via-main (compiler/compile-source source (h/default-env) {:seed seed})
-        direct (predicate-core/compile-source source (h/default-env) {:seed seed})]
-    (is (= (:cell direct) (:cell via-main)))
-    (is (= (count (:props direct)) (count (:props via-main))))
+        direct (predicate-core/compile-source source (h/default-env) {:seed seed})
+        direct-net (run-compiled direct)
+        main-net (run-compiled via-main)]
+    (is (= (strongest direct-net (:cell direct))
+           (semantic-value main-net (:cell via-main))))
     (is (= (count (:applications direct))
            (count (:applications via-main))))))
 
@@ -69,13 +85,13 @@
   (let [left-calls (atom 0)
         right-calls (atom 0)
         left (compiler-with-custom left-calls)
-        right (common/make-compiler
-               (common/compose-rules
-                (common/on (common/expression-kind? :composition-test)
-                           (fn [compile* state _expr]
+        right (cps/make-compiler
+               (cps/compose-rules
+                (cps/on (common/expression-kind? :composition-test)
+                           (fn [compile-k state _expr k]
                              (swap! right-calls inc)
-                             (compile* state (ast/lit 99))))
-                compiler-core/compiler-dispatch))
+                             (cps/call compile-k state (ast/lit 99) k)))
+                cps-core/compiler-dispatch))
         expr (ast/sequence* (custom-expr 1) (custom-expr 2))
         left-result (compiler/compile-expr expr (h/default-env)
                                            {:compiler left})
@@ -119,7 +135,7 @@
                                           {:compiler compile*})
           result-net (run-compiled compiled)]
       (is (= 1 @calls))
-      (is (= 41 (strongest result-net (:cell compiled))))))
+      (is (= 41 (semantic-value result-net (:cell compiled))))))
   (testing "lazy topology"
     (let [calls (atom 0)
           compile* (compiler-with-custom calls)

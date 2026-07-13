@@ -15,6 +15,7 @@
                (nb/install-cell slots-id)
                (nb/install-cell out-id))
         [_ n1] ((prop/construct-propagator
+                 [:compiler-2/lexical-projection tag]
                  (fn [_ _ network]
                    [(message out-id
                              (project (net/network-cell-strongest network slots-id)))])
@@ -35,6 +36,7 @@
                (nb/install-cell update-id)
                (nb/install-cell out-id))
         [_ n1] ((prop/construct-propagator
+                 :compiler-2/lexical-merge
                  (fn [_ _ network]
                    (let [content (net/network-cell-strongest network content-id)
                          update (net/network-cell-strongest network update-id)
@@ -84,5 +86,4 @@
    {:lexical/symbol sym
     :scope/source source
     :binding binding}))
-
 

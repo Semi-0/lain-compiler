@@ -14,7 +14,9 @@
             [propagators.datastructures.scope-source :as scope-source]
             [propagators.ids :as ids]
             [propagators.install :as i]
+            [propagators.message :refer [message]]
             [propagators.network :as net]
+            [propagators.network-builder :as nb]
             [propagators.propagator :as prop]
             [propagators.stdlib.prop :as stdlib-prop])
   (:import [java.nio.charset StandardCharsets]
@@ -208,9 +210,33 @@
         [_tasks n] (core/eval-activation-result ret (:net ctx))]
     [(declared-prop-ids effects) n]))
 
+(def lexical-topology-key
+  "Compiler-known stable lexical frame and binding addresses."
+  ::lexical-topology)
+
+(defn- declare-frame-addresses
+  [network env-id source-id chain-id]
+  (net/update-net-dict-entry
+   network
+   lexical-topology-key
+   #(-> (or % {})
+        (assoc-in [:frames env-id :scope/source-id] source-id)
+        (assoc-in [:frames env-id :scope/chain-id] chain-id))))
+
+(defn- declare-binding-address
+  [network env-id sym binding-id]
+  (net/update-net-dict-entry
+   network
+   lexical-topology-key
+   #(update-in (or % {})
+               [:frames env-id :bindings sym]
+               (fnil conj #{})
+               binding-id)))
+
 (defn- p:extend-chain
   [chain-id scope-id out-id]
   ((prop/primitive-propagator
+    :lexical-access/extend-chain
     (fn [chain scope]
       (if (or (value/unusable? chain)
               (value/unusable? scope))
@@ -223,6 +249,7 @@
 (defn- p:inc-depth
   [depth-id out-id]
   ((prop/primitive-propagator
+    :lexical-access/inc-depth
     (fn [depth]
       (if (value/unusable? depth)
         value/nothing
@@ -234,6 +261,7 @@
   [sym]
   (fn [bindings-id out-id]
     ((prop/primitive-propagator
+      [:lexical-access/contains-binding sym]
       (fn [bindings]
         (if (and (set? bindings)
                  (contains? bindings sym))
@@ -246,6 +274,7 @@
   [sym]
   (fn [bindings-id out-id]
     ((prop/primitive-propagator
+      [:lexical-access/missing-binding sym]
       (fn [bindings]
         (if (and (set? bindings)
                  (not (contains? bindings sym)))
@@ -325,7 +354,7 @@
                    bindings-id
                    missing-id)
         (i/slot env-parent-key parent-id frame-id)
-        (i/prop :local-binding
+        (i/prop [:lexical-access/local sym]
                 [present-id]
                 []
                 (lexical-local-activation sym
@@ -333,7 +362,7 @@
                                           frame-id
                                           out-id
                                           [install-key :local-binding]))
-        (i/prop :parent-frame
+        (i/prop [:lexical-access/parent sym]
                 [missing-id parent-id]
                 []
                 (lexical-parent-activation sym
@@ -374,6 +403,7 @@
   "Retain one binding declaration using lineage/source inferred from the chain."
   [sym chain-id binding-id bindings-id]
   ((prop/primitive-propagator
+    [:lexical-access/binding-declaration sym]
     (fn [chain binding]
       (if (or (not (vector? chain))
               (empty? chain)
@@ -386,41 +416,60 @@
    chain-id binding-id bindings-id))
 
 (defn p:copy-bindings
-  "One-way monotone copy from a parent binding reducer to a child reducer."
+  "Copy reducer content—not its strongest projection—into a child scope."
   [parent-bindings-id child-bindings-id]
-  (stdlib-prop/id parent-bindings-id child-bindings-id))
+  (prop/construct-propagator
+   :lexical-access/copy-bindings
+   (fn [_inputs _outputs network]
+     (let [content (net/network-cell-content network parent-bindings-id)]
+       (if (value/unusable? content)
+         []
+         [(message child-bindings-id content)])))
+   [parent-bindings-id]
+   [child-bindings-id]))
+
+(defn- p:binding-candidates
+  "Project the declarations for `sym` from the existing lexical reducer."
+  [sym bindings-id candidates-id]
+  ((prop/primitive-propagator
+    :lexical-access/binding-candidates
+    (fn [reduced]
+      (if (reducer/reduced-value? reduced)
+        (let [candidates (get (reducer/reduced-result reduced) sym)]
+          (if (seq candidates) candidates value/nothing))
+        value/nothing)))
+   bindings-id candidates-id))
 
 (defn p:reducer-lexical-access
   [lookup-key sym env-id out-id]
   (let [bindings-id (stable-node-id :reducer-lexical lookup-key env-id :bindings)
-        grouped-id (stable-node-id :reducer-lexical lookup-key env-id :grouped)
         candidates-id (stable-node-id :reducer-lexical lookup-key env-id :candidates)
         chain-id (stable-node-id :reducer-lexical lookup-key env-id :chain)
         install-key [:compiler-2 :reducer-lexical lookup-key sym env-id out-id]]
     (fn [network]
       (-> (i/context network install-key)
           (i/slot env-bindings-key bindings-id env-id)
-          (i/install :reduced-result reducer/p:reduced-result bindings-id grouped-id)
-          (i/slot sym candidates-id grouped-id)
           (i/slot env-scope-chain-key chain-id env-id)
+          (i/install :binding-candidates
+                     (partial p:binding-candidates sym)
+                     bindings-id candidates-id)
           (i/install :adapt-candidates
-                     (partial scope-source/p:adapt-candidates lookup-key)
+                     (partial scope-source/p:adapt-candidates
+                              :lexical-access
+                              lookup-key)
                      candidates-id chain-id out-id)
           apply-install-context))))
 
 (defn p:lexical-access
-  "Install reducer-backed access and the structural compatibility path.
+  "Install reducer-backed lexical access.
 
-  Only the path whose environment representation is present can emit values."
+  The environment's binding reducer is the single lexical authority. The
+  structural frame walker remains available as `p:structural-lexical-access`
+  for compatibility callers, but is not part of compiler lookup."
   ([sym env-id out-id]
    (p:lexical-access [:lexical sym env-id out-id] sym env-id out-id))
   ([lookup-key sym env-id out-id]
-   (fn [network]
-     (let [[structural-props n1] ((p:structural-lexical-access sym env-id out-id)
-                                  network)
-           [reducer-props n2] ((p:reducer-lexical-access lookup-key sym env-id out-id)
-                               n1)]
-       [(vec (concat structural-props reducer-props)) n2]))))
+   (p:reducer-lexical-access lookup-key sym env-id out-id)))
 
 (declare local-first-route-effects)
 
@@ -525,21 +574,37 @@
 (defn- p:scoped-bound-value
   [candidate bound-id out-id]
   ((prop/primitive-propagator
+    :lexical-access/read
     (fn [bound-value]
-      (if (value/unusable? bound-value)
-        value/nothing
-        (let [inner-dependencies
-              (if (scope-source/scope-value? bound-value)
-                (scope-source/dependencies bound-value)
-                #{})]
-          (scope-source/scope-value
-           (scope-source/source-scope candidate)
-           nil
-           (scope-source/context-chain candidate)
-           (scope-source/unwrap bound-value)
-           (into (scope-source/dependencies candidate)
-                 inner-dependencies))))))
+      (scope-source/scope-value
+       (scope-source/source-scope candidate)
+       bound-id
+       (scope-source/context-chain candidate)
+       bound-value
+       (scope-source/dependencies candidate))))
    bound-id out-id))
+
+(defn p:bound-value-layer
+  "Connect a lexical answer's base layer to its addressed binding cell."
+  [value-answer-id bound-id]
+  (obj/p:slot scope-source/base-layer bound-id value-answer-id))
+
+(defn p:scope-dependent-read
+  "Read one known binding cell as a lexical value with provenance."
+  [lookup-key source-id chain-id bound-id value-answer-id]
+  ((prop/primitive-propagator
+    [:lexical-access/scoped-read lookup-key]
+    (fn [source chain bound-value]
+      (if (or (value/unusable? source)
+              (value/unusable? chain))
+        value/nothing
+        (scope-source/scope-value
+         source
+         bound-id
+         chain
+         bound-value
+         #{(scope-source/lexical-token lookup-key source chain)}))))
+   source-id chain-id bound-id value-answer-id))
 
 (defn p:access-binding
   "Dereference the selected binding while retaining its lexical envelope.
@@ -561,7 +626,7 @@
                               [install-key
                                (scope-source/source-scope candidate)
                                bound-id])
-                   (i/install :scoped-bound-value
+                   (i/install :read-bound-value
                               (partial p:scoped-bound-value candidate)
                               bound-id
                               value-answer-id)
@@ -574,11 +639,68 @@
                              network
                              [binding-answer-id value-answer-id])
             [prop-id n] ((prop/construct-propagator
+                          :lexical-access/access-binding
                           activate
                           [binding-answer-id]
                           [])
                          network*)]
         [[prop-id] n]))))
+
+(defn- existing-local-binding-address
+  [network sym env-id]
+  (let [{:keys [scope/source-id scope/chain-id bindings]}
+        (get-in (net/network-dict-entry network lexical-topology-key)
+                [:frames env-id])
+        bound-ids (get bindings sym)]
+    (when (and (= 1 (count bound-ids))
+               (every? ids/node-id? [source-id chain-id (first bound-ids)]))
+      {:binding/id (first bound-ids)
+       :scope/source-id source-id
+       :scope/chain-id chain-id})))
+
+(defn p:direct-lexical-value
+  "Read a known canonical binding cell without constructing reducer access."
+  [lookup-key source-id chain-id bound-id value-answer-id]
+  (fn [network]
+    (let [[prop-id installed]
+          ((p:scope-dependent-read lookup-key
+                                   source-id chain-id bound-id value-answer-id)
+           network)]
+      [[prop-id] installed])))
+
+(defn p:reducer-lexical-value
+  "Resolve a binding through the lexical reducer, then read its live value."
+  [lookup-key sym env-id value-answer-id]
+  (let [binding-answer-id
+        (stable-node-id :reducer-lexical-value
+                        lookup-key sym env-id value-answer-id :binding)]
+    (fn [network]
+      (let [network (-> network
+                        (nb/ensure-cell binding-answer-id)
+                        (nb/ensure-cell value-answer-id))
+            [access-props with-access]
+            ((p:lexical-access lookup-key sym env-id binding-answer-id) network)
+            [read-props with-read]
+            ((p:access-binding binding-answer-id value-answer-id) with-access)]
+        [(into (vec access-props) read-props) with-read]))))
+
+(defn p:lexical-value
+  "Read `sym` as one scope-dependent live value.
+
+  A declared canonical local binding is used directly. Unknown or ambiguous
+  topology falls back to reducer selection without changing the result shape."
+  ([sym env-id value-answer-id]
+   (p:lexical-value [:lexical sym env-id value-answer-id]
+                    sym env-id value-answer-id))
+  ([lookup-key sym env-id value-answer-id]
+   (fn [network]
+     (if-let [{:keys [binding/id scope/source-id scope/chain-id]}
+              (existing-local-binding-address network sym env-id)]
+       ((p:direct-lexical-value lookup-key
+                                source-id chain-id id value-answer-id)
+        network)
+       ((p:reducer-lexical-value lookup-key sym env-id value-answer-id)
+        network)))))
 
 (defn boundary-ids [x]
   (cond
@@ -643,29 +765,34 @@
         local-bindings-id (stable-node-id install-key :local-bindings)
         child-scope (child-scope-for-id child-env-id)]
     (fn [network]
-      (-> (i/context network install-key)
-          (i/slot env-parent-key parent-env-id child-env-id)
-          (i/slot env-scope-key scope-id child-env-id)
-          (i/slot env-local-bindings-key local-bindings-id child-env-id)
-          (i/slot env-bindings-key parent-bindings-id parent-env-id)
-          (i/slot env-bindings-key child-bindings-id child-env-id)
-          (i/install :copy-bindings
-                     p:copy-bindings
-                     parent-bindings-id
-                     child-bindings-id)
-          (i/slot env-scope-chain-key parent-chain-id parent-env-id)
-          (i/install :chain-extend
-                     p:extend-chain
-                     parent-chain-id
-                     scope-id
-                     child-chain-id)
-          (i/slot env-scope-chain-key child-chain-id child-env-id)
-          (i/slot env-depth-key parent-depth-id parent-env-id)
-          (i/install :depth-inc p:inc-depth parent-depth-id child-depth-id)
-          (i/slot env-depth-key child-depth-id child-env-id)
-          (i/tell scope-id child-scope)
-          (i/tell local-bindings-id #{})
-          apply-install-context))))
+      (let [[props installed]
+            (-> (i/context network install-key)
+                (i/slot env-parent-key parent-env-id child-env-id)
+                (i/slot env-scope-key scope-id child-env-id)
+                (i/slot env-local-bindings-key local-bindings-id child-env-id)
+                (i/slot env-bindings-key parent-bindings-id parent-env-id)
+                (i/slot env-bindings-key child-bindings-id child-env-id)
+                (i/install :copy-bindings
+                           p:copy-bindings
+                           parent-bindings-id
+                           child-bindings-id)
+                (i/slot env-scope-chain-key parent-chain-id parent-env-id)
+                (i/install :chain-extend
+                           p:extend-chain
+                           parent-chain-id
+                           scope-id
+                           child-chain-id)
+                (i/slot env-scope-chain-key child-chain-id child-env-id)
+                (i/slot env-depth-key parent-depth-id parent-env-id)
+                (i/install :depth-inc p:inc-depth parent-depth-id child-depth-id)
+                (i/slot env-depth-key child-depth-id child-env-id)
+                (i/tell scope-id child-scope)
+                (i/tell local-bindings-id #{})
+                apply-install-context)]
+        [props (declare-frame-addresses installed
+                                        child-env-id
+                                        scope-id
+                                        child-chain-id)]))))
 
 (defn p:bind-local
   "Bind one fixed symbol into a fresh child env frame.
@@ -683,23 +810,159 @@
         bindings-id (stable-node-id install-key :bindings)
         binding-descriptor-id (stable-node-id install-key :binding-descriptor)]
     (fn [network]
-      (-> (i/context network install-key)
-          (i/slot env-parent-key env-id out-env-id)
-          (share-slot env-scope-key scope-id env-id out-env-id)
-          (share-slot env-scope-chain-key chain-id env-id out-env-id)
-          (share-slot env-depth-key depth-id env-id out-env-id)
-          (share-slot env-bindings-key
-                      bindings-id
-                      env-id
-                      out-env-id)
-          (i/tell binding-descriptor-id (cell-binding binding-id))
-          (i/install :binding-declaration
-                     (partial p:binding-declaration sym)
-                     chain-id binding-descriptor-id bindings-id)
-          (i/slot env-local-bindings-key local-bindings-id out-env-id)
-          (i/slot sym slot-id out-env-id)
-          (i/slot binding-value-key binding-id slot-id)
-          (i/tell local-bindings-id #{sym})
-          apply-install-context))))
+      (let [[props installed]
+            (-> (i/context network install-key)
+                (i/slot env-parent-key env-id out-env-id)
+                (share-slot env-scope-key scope-id env-id out-env-id)
+                (share-slot env-scope-chain-key chain-id env-id out-env-id)
+                (share-slot env-depth-key depth-id env-id out-env-id)
+                (share-slot env-bindings-key
+                            bindings-id
+                            env-id
+                            out-env-id)
+                (i/tell binding-descriptor-id (cell-binding binding-id))
+                (i/install :binding-declaration
+                           (partial p:binding-declaration sym)
+                           chain-id binding-descriptor-id bindings-id)
+                (i/slot env-local-bindings-key local-bindings-id out-env-id)
+                (i/slot sym slot-id out-env-id)
+                (i/slot binding-value-key binding-id slot-id)
+                (i/tell local-bindings-id #{sym})
+                apply-install-context)]
+        [props (-> installed
+                   (declare-frame-addresses out-env-id scope-id chain-id)
+                   (declare-binding-address out-env-id sym binding-id))]))))
 
+(defn p:declare-local
+  "Declare `sym` in the existing lexical scope represented by `env-id`.
 
+  Unlike `p:bind-local`, this refines the scope's reducer-backed binding
+  collection in place. Entering a scope is `p:sub-env`; adding names is
+  `p:declare-local`.
+  "
+  [sym env-id binding-id]
+  (let [install-key [:compiler-2 :declare-local sym env-id binding-id]
+        chain-id (stable-node-id install-key :chain)
+        bindings-id (stable-node-id install-key :bindings)
+        binding-descriptor-id (stable-node-id install-key :binding-descriptor)]
+    (fn [network]
+      (let [[props installed]
+            (-> (i/context network install-key)
+                (i/slot env-scope-chain-key chain-id env-id)
+                (i/slot env-bindings-key bindings-id env-id)
+                (i/tell binding-descriptor-id (cell-binding binding-id))
+                (i/install :binding-declaration
+                           (partial p:binding-declaration sym)
+                           chain-id binding-descriptor-id bindings-id)
+                apply-install-context)]
+        [props installed]))))
+
+(defn p:declare-fixed-local
+  "Declare a lexical binding whose address cannot be replaced in this frame."
+  [sym env-id binding-id]
+  (fn [network]
+    (let [[props installed] ((p:declare-local sym env-id binding-id) network)]
+      [props (declare-binding-address installed env-id sym binding-id)])))
+
+(defn- imported-binding-id
+  [env-id sym source]
+  (stable-node-id :imported-binding env-id sym source))
+
+(defn import-environment
+  "Install a legacy compound environment as one live environment cell.
+
+  Direct reducer bindings are moved into stable value cells; the environment
+  reducer retains only binding descriptors. Already-addressed bindings are
+  preserved. Returns `[network env-id]`.
+  "
+  [network env-id environment]
+  (let [bindings (obj/slot-value environment env-bindings-key)
+        [network bindings']
+        (if-not (reducer/reducer-cell? bindings)
+          [network bindings]
+          (reduce-kv
+           (fn [[n slots] [sym source :as slot-key] declaration]
+             (let [binding (:binding declaration)]
+               (if (binding-id binding)
+                 [n (assoc slots slot-key declaration)]
+                 (let [value-id (imported-binding-id env-id sym source)]
+                   [(nb/seed-cell (nb/ensure-cell n value-id) value-id binding)
+                    (assoc slots slot-key
+                           (assoc declaration :binding (cell-binding value-id)))]))))
+           [network {}]
+           (reducer/reducer-slots bindings)))
+        descriptors
+        (if (reducer/reducer-cell? bindings')
+          {}
+          (reduce-kv
+           (fn [m [_sym _source] {:keys [lexical/symbol binding]}]
+             (assoc m symbol binding))
+           {}
+           bindings'))
+        environment'
+        (if (reducer/reducer-cell? bindings)
+          (obj/compound-object
+           (reduce-kv
+            (fn [m sym binding]
+              (if (contains? m sym)
+                (assoc m sym (binding-slot binding))
+                m))
+            (assoc (object->map environment)
+                   env-bindings-key
+                   (reducer/reducer-cell (reducer/reducer-id bindings)
+                                         (reducer/merge-net bindings)
+                                         (reducer/strongest-net bindings)
+                                         bindings'))
+            descriptors))
+          environment)]
+    [(nb/seed-cell (nb/ensure-cell network env-id) env-id environment') env-id]))
+
+(defn- declared-binding-id
+  [env-id sym binding]
+  (or (binding-id binding)
+      (stable-node-id :declared-binding env-id sym)))
+
+(defn declare-bindings
+  "Declare `bindings` in one live environment without evaluating them.
+
+  `environment` may be a live environment id or a legacy compound value.
+  Returns declaration topology as `{:net :env :props}`; callers decide when
+  to run the returned propagators."
+  [network environment env-id bindings]
+  (let [[network env-id] (if (ids/node-id? environment)
+                           [(nb/ensure-cell network environment) environment]
+                           (import-environment network env-id environment))]
+    (reduce
+     (fn [{:keys [net props] :as declared} [sym binding]]
+       (let [id (declared-binding-id env-id sym binding)
+             net (if (binding-id binding)
+                   (nb/ensure-cell net id)
+                   (nb/seed-cell (nb/ensure-cell net id) id binding))
+             [new-props net] ((p:declare-local sym env-id id) net)]
+         (assoc declared :net net :props (into props new-props))))
+     {:net network :env env-id :props []}
+     bindings)))
+
+(defn resolve-binding
+  "Resolve `sym` through the live lexical reducer on a local network copy."
+  [network environment sym]
+  (if-not (ids/node-id? environment)
+    (lookup environment sym)
+    (let [answer-id (stable-node-id :resolve-binding environment sym)
+          [props installed] ((p:lexical-access [:resolve-binding environment sym]
+                                               sym environment answer-id)
+                             (nb/ensure-cell network answer-id))
+          settled (nb/run-propagators installed props)
+          answer (net/network-cell-strongest settled answer-id)]
+      (when (scope-source/scope-value? answer)
+        (scope-source/base-value answer)))))
+
+(defn resolve-binding-id
+  [network environment sym]
+  (if (ids/node-id? environment)
+    (let [declared (get-in (net/network-dict-entry network lexical-topology-key)
+                           [:frames environment :bindings sym])]
+      (if (= 1 (count declared))
+        (first declared)
+        (some-> (resolve-binding network environment sym) binding-id)))
+    (some-> (resolve-binding network environment sym) binding-id)))

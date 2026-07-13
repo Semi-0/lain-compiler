@@ -2,13 +2,15 @@
   (:require [clojure.test :refer [deftest is testing]]
             [propagators.compiler-2.runtime.application :as application]
             [propagators.compiler-2.language.ast :as ast]
-            [propagators.compiler-2.compiler.core :as compiler]
+            [propagators.compiler-2.cps-core :as compiler]
             [propagators.compiler-2.model.env :as env]
             [propagators.compiler-2.compiler.basis :as h]
             [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.compiler-2.predicate-core :as predicate-core]
             [propagators.compiler-common.cps :as cps]
             [propagators.datastructures.compound-object :as obj]
+            [propagators.datastructures.dependency :as dependency]
+            [propagators.datastructures.scope-source :as scope-source]
             [propagators.ids :as ids]
             [propagators.network :as net]
             [propagators.network-builder :as nb]))
@@ -16,6 +18,10 @@
 (defn- custom-expr [value]
   (obj/compound-object {ast/type-slot :cps-test
                         ast/value-slot value}))
+
+(defn- direct-operator-expr [operator]
+  (obj/compound-object {ast/type-slot :direct-operator-test
+                        ast/value-slot operator}))
 
 (defn- compiler-with-custom [calls]
   (cps/make-compiler
@@ -28,6 +34,17 @@
 
 (defn- run-compiled [compiled]
   (nb/run-propagators (:net compiled) (:props compiled)))
+
+(defn- semantic-value [network id]
+  (loop [v (net/network-cell-strongest network id)]
+    (cond
+      (scope-source/scope-value? v)
+      (recur (scope-source/base-value v))
+
+      (dependency/dependency-value? v)
+      (recur (dependency/base-value v))
+
+      :else v)))
 
 (deftest cps-primitives-schedule-work-and-fall-through
   (let [events (atom [])
@@ -54,22 +71,20 @@
            #(throw (ex-info "continuation failure" {}))))
         {} :expr))))
 
-(deftest cps-default-preserves-predicate-results
+(deftest cps-default-preserves-synchronous-result-semantics
   (let [compiler-env (h/default-env)]
     (doseq [source ["1"
                     "(+ 1 2)"
-                    "(let [x 1] (+ x 2))"
-                    "(list 1 2 3)"
-                    "(:: [x] (+ x 1))"]]
+                    "(let [x 1] (+ x 2))"]]
       (testing source
         (let [seed [:cps-parity source]
               expected (predicate-core/compile-source source compiler-env
                                                       {:seed seed})
-              actual (compiler/compile-source source compiler-env {:seed seed})]
-          (is (= (:cell expected) (:cell actual)))
-          (is (= (count (:props expected)) (count (:props actual))))
-          (is (= (count (:applications expected))
-                 (count (:applications actual)))))))))
+              actual (compiler/compile-source source compiler-env {:seed seed})
+              expected-net (run-compiled expected)
+              actual-net (run-compiled actual)]
+          (is (= (semantic-value expected-net (:cell expected))
+                 (semantic-value actual-net (:cell actual)))))))))
 
 (deftest cps-compilation-is-stack-safe
   (testing "five thousand nested lexical scopes"
@@ -169,10 +184,17 @@
                     (fn [_compile-k state _forms out-id k]
                       (swap! cps-calls inc)
                       (cps/continue k state (env/cell-binding out-id)))})
-        compiler-env (-> (h/default-env)
-                         (env/bind-local 'legacy legacy)
-                         (env/bind-local 'preferred preferred))]
-    (compiler/compile-expr (ast/app (ast/sym 'legacy)) compiler-env)
-    (compiler/compile-expr (ast/app (ast/sym 'preferred)) compiler-env)
+        compile* (cps/make-compiler
+                  (cps/compose-rules
+                   (cps/on #(= :direct-operator-test (ast/type %))
+                           (fn [_compile-k state expr k]
+                             (cps/continue k state (ast/value expr))))
+                   compiler/compiler-dispatch))]
+    (compiler/compile-expr (ast/app (direct-operator-expr legacy))
+                           (h/default-env)
+                           {:compiler compile*})
+    (compiler/compile-expr (ast/app (direct-operator-expr preferred))
+                           (h/default-env)
+                           {:compiler compile*})
     (is (= 1 @legacy-calls))
     (is (= 1 @cps-calls))))

@@ -19,7 +19,20 @@
 
 (defn compile-symbol
   [_compile-k state expr k]
-  (finish k (common/compile-symbol-expression nil state expr)))
+  (let [sym (ast/name expr)
+        value-id (h/node-id state [:lexical-access sym :value])
+        network (h/ensure-cell (:net state) value-id)
+        [props compiled]
+        ((env/p:lexical-value [:compiler-2 (:seed state) (:path state) sym]
+                              sym
+                              (:env state)
+                              value-id)
+         network)]
+    (cps/continue k
+                  (-> state
+                      (assoc :net compiled)
+                      (h/add-props props))
+                  (env/cell-binding value-id))))
 
 (defn compile-sequence
   [compile-k state expr k]
@@ -27,8 +40,8 @@
 
 (defn compile-let-cell
   [compile-k state expr k]
-  (let [[body-state _scoped-env]
-        (common/declare-let-cell-scope state (ast/names expr))]
+  (let [[body-state _bindings]
+        (declarations/declare-local-cells state :let-cell-env (ast/names expr))]
     (cps/call compile-k body-state (ast/body expr) k)))
 
 (defn compile-let
