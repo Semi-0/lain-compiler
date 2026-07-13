@@ -1,9 +1,9 @@
 (ns propagators.compiler-2.legacy
   "Legacy compiler-2 operators kept for compatibility."
   (:require [propagators.cells.value :as value]
-            [propagators.compiler-2.closure-value :as closure-value]
-            [propagators.compiler-2.env :as env]
-            [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.model.closure-value :as closure-value]
+            [propagators.compiler-2.model.env :as env]
+            [propagators.compiler-2.compiler.basis :as h]
             [propagators.datastructures.tms.legacy :as tms]
             [propagators.message :refer [message message-id message-value]]))
 
@@ -31,7 +31,7 @@
   [closure-id closure-info premise storage-id network arg-ids out-id]
   (let [apply-messages (activation-messages
                         ((requiring-resolve
-                          'propagators.compiler-2.application/closure-application-messages)
+                          'propagators.compiler-2.runtime.application/closure-application-messages)
                          closure-id
                          nil
                          arg-ids

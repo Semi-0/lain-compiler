@@ -1,4 +1,4 @@
-(ns propagators.compiler-2.ast
+(ns propagators.compiler-2.language.ast
   "Slot-backed AST constructors for compile-2."
   (:refer-clojure :exclude [name type])
   (:require [propagators.datastructures.compound-object :as obj]))
@@ -130,3 +130,5 @@
 (defn bindings [expr] (slot expr bindings-slot))
 (defn inputs [expr] (slot expr inputs-slot))
 (defn output [expr] (slot expr output-slot))
+
+

@@ -6,7 +6,7 @@
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.scope-source :as scope-source]
-            [propagators.compiler-2.env :as env]
+            [propagators.compiler-2.model.env :as env]
             [propagators.gur :as gur]
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]

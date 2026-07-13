@@ -1,11 +1,11 @@
 (ns ^:deprecated propagators.compiler-2.predicate-core
-  "Deprecated synchronous compiler shim; production uses `compiler-2.compiler.cps`."
+  "Deprecated synchronous compiler shim; production uses `compiler-2.compiler.core`."
   (:refer-clojure :exclude [symbol?])
-  (:require [propagators.compiler-2.application :as application]
+  (:require [propagators.compiler-2.runtime.application :as application]
             [propagators.compiler-2.compiler.predicates :as predicates]
             [propagators.compiler-2.core :as core]
             [propagators.compiler-2.deprecated.synchronous :as synchronous]
-            [propagators.compiler-2.helpers :as h]
+            [propagators.compiler-2.compiler.basis :as h]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
             [propagators.network :as net]

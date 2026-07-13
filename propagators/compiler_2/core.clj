@@ -1,15 +1,15 @@
 (ns ^:deprecated propagators.compiler-2.core
   "Deprecated synchronous compiler compatibility façade.
 
-  Production compilation is owned by `propagators.compiler-2.compiler.cps`.
+  Production compilation is owned by `propagators.compiler-2.compiler.core`.
   Declarations and handlers are re-exported here for source compatibility."
   (:require [propagators.compiler-2.compiler.declarations :as declarations]
             [propagators.compiler-2.deprecated.synchronous :as synchronous]
-            [propagators.compiler-2.dispatch :as dispatch]
-            [propagators.compiler-2.env :as env]
-            [propagators.compiler-2.helpers :as h]
-            [propagators.compiler-2.operator-value :as operator-value]
-            [propagators.compiler-2.parser :as parser]
+            [propagators.compiler-2.compiler.dispatch :as dispatch]
+            [propagators.compiler-2.model.env :as env]
+            [propagators.compiler-2.compiler.basis :as h]
+            [propagators.compiler-2.model.operator-value :as operator-value]
+            [propagators.compiler-2.language.parser :as parser]
             [propagators.compiler-common.core :as common]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]

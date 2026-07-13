@@ -1,11 +1,11 @@
 (ns ^:deprecated propagators.compiler-2.deprecated.synchronous
   "Deprecated synchronous compiler handlers retained for compatibility."
-  (:require [propagators.compiler-2.ast :as ast]
+  (:require [propagators.compiler-2.language.ast :as ast]
             [propagators.compiler-2.compiler.declarations :as declarations]
-            [propagators.compiler-2.dispatch :as dispatch]
-            [propagators.compiler-2.env :as env]
-            [propagators.compiler-2.helpers :as h]
-            [propagators.compiler-2.lazy-topology :as lazy-topology]
+            [propagators.compiler-2.compiler.dispatch :as dispatch]
+            [propagators.compiler-2.model.env :as env]
+            [propagators.compiler-2.compiler.basis :as h]
+            [propagators.compiler-2.runtime.lazy-topology :as lazy-topology]
             [propagators.compiler-common.core :as common]))
 
 (defn compile-literal
@@ -119,4 +119,3 @@
     {:dispatch compiler-dispatch
      :compile* (common/make-compiler compiler-dispatch)
      :application-handler application-handler}))
-

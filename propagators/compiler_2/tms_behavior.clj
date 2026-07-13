@@ -1,11 +1,11 @@
 (ns propagators.compiler-2.tms-behavior
   "Compatibility facade for compiler-2 TMS/behavior operators.
 
-  New code should require propagators.compiler-2.tms,
-  propagators.compiler-2.behavior, or propagators.compiler-2.legacy directly."
-  (:require [propagators.compiler-2.behavior :as behavior]
+  New code should require propagators.compiler-2.operators.tms,
+  propagators.compiler-2.operators.behavior, or propagators.compiler-2.legacy directly."
+  (:require [propagators.compiler-2.operators.behavior :as behavior]
             [propagators.compiler-2.legacy :as legacy]
-            [propagators.compiler-2.tms :as tms]))
+            [propagators.compiler-2.operators.tms :as tms]))
 
 (def distributed-behavior-operator behavior/distributed-behavior-operator)
 (def stable-distributed-behavior-operator behavior/stable-distributed-behavior-operator)

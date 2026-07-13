@@ -1,10 +1,10 @@
-(ns propagators.compiler-2.compiler.cps
+(ns propagators.compiler-2.compiler.core
   "Canonical stack-safe compiler-2 implementation."
-  (:require [propagators.compiler-2.application :as application]
+  (:require [propagators.compiler-2.runtime.application :as application]
             [propagators.compiler-2.compiler.handlers :as handlers]
             [propagators.compiler-2.compiler.predicates :as predicates]
-            [propagators.compiler-2.helpers :as h]
-            [propagators.compiler-2.parser :as parser]
+            [propagators.compiler-2.compiler.basis :as h]
+            [propagators.compiler-2.language.parser :as parser]
             [propagators.compiler-common.cps :as cps]
             [propagators.compiler-common.core :as common]
             [propagators.ids :as ids]

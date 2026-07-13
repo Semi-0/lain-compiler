@@ -1,7 +1,7 @@
-(ns propagators.compiler-2.reducer
+(ns propagators.compiler-2.operators.reducer
   "Compiler-2 closures adapted to reducer-subnet merge networks."
-  (:require [propagators.compiler-2.closure-value :as closure-value]
-            [propagators.compiler-2.helpers :as h]
+  (:require [propagators.compiler-2.model.closure-value :as closure-value]
+            [propagators.compiler-2.compiler.basis :as h]
             [propagators.network :as net]
             [propagators.network-builder :as nb]))
 
@@ -45,7 +45,7 @@
                    (nb/install-cell args-id)
                    (nb/install-cell closure-cell-id closure-info closure-info))
             [_prop-id n1] (((requiring-resolve
-                             'propagators.compiler-2.application/p:apply-closure)
+                             'propagators.compiler-2.runtime.application/p:apply-closure)
                             closure-cell-id
                             args-id
                             arg-ids
@@ -57,3 +57,5 @@
                     (net/assoc-net-dict-entry :out out-id))
           reducer-id-key
           (net/assoc-net-dict-entry reducer-id-key reducer-id))))))
+
+

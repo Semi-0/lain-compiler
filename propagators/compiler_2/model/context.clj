@@ -1,6 +1,6 @@
-(ns propagators.compiler-2.context
+(ns propagators.compiler-2.model.context
   "Implicit compiler-2 evaluation context values for contextual operators."
-  (:require [propagators.compiler-2.env :as env]
+  (:require [propagators.compiler-2.model.env :as env]
             [propagators.datastructures.compound-object :as obj]))
 
 (def scope-slot :context/scope)
@@ -35,3 +35,5 @@
    :context/chain (chain context)
    :context/application (application context)
    :context/operator (operator context)})
+
+

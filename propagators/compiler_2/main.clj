@@ -1,11 +1,11 @@
 (ns propagators.compiler-2.main
   "Compatibility facade for compiler-2."
-  (:require [propagators.compiler-2.application-value :as application-value]
-            [propagators.compiler-2.behavior :as behavior]
-            [propagators.compiler-2.closure-value :as closure-value]
-            [propagators.compiler-2.compiler.cps :as compiler]
+  (:require [propagators.compiler-2.model.application-value :as application-value]
+            [propagators.compiler-2.operators.behavior :as behavior]
+            [propagators.compiler-2.model.closure-value :as closure-value]
+            [propagators.compiler-2.compiler.core :as compiler]
             [propagators.compiler-2.core :as core]
-            [propagators.compiler-2.parser :as parser]))
+            [propagators.compiler-2.language.parser :as parser]))
 
 (def compiler-result-key core/compiler-result-key)
 (def compiler-props-key core/compiler-props-key)

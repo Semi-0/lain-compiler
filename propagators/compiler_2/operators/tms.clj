@@ -1,10 +1,10 @@
-(ns propagators.compiler-2.tms
+(ns propagators.compiler-2.operators.tms
   "Compiler-2 distributed TMS operators."
   (:require [propagators.cells.value :as value]
-            [propagators.compiler-2.closure-value :as closure-value]
-            [propagators.compiler-2.env :as env]
-            [propagators.compiler-2.helpers :as h]
-            [propagators.compiler-2.operator-value :as operator-value]
+            [propagators.compiler-2.model.closure-value :as closure-value]
+            [propagators.compiler-2.model.env :as env]
+            [propagators.compiler-2.compiler.basis :as h]
+            [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.datastructures.dependency :as dependency]
             [propagators.datastructures.scope-source :as scope-source]
             [propagators.datastructures.tms.distributed :as tms]
@@ -43,7 +43,7 @@
   [closure-id closure-info network arg-ids out-id]
   (let [apply-messages (activation-messages
                         ((requiring-resolve
-                          'propagators.compiler-2.application/closure-application-messages)
+                          'propagators.compiler-2.runtime.application/closure-application-messages)
                          closure-id
                          nil
                          arg-ids
@@ -210,7 +210,7 @@
       []
       (let [apply-messages (activation-messages
                             ((requiring-resolve
-                              'propagators.compiler-2.application/closure-application-messages)
+                              'propagators.compiler-2.runtime.application/closure-application-messages)
                              closure-id
                              nil
                              inner-arg-ids
@@ -387,3 +387,5 @@
       (env/bind-at 'premise-content-input (premise-content-input-operator) 0)
       (env/bind-at 'premise-believe (premise-state-operator true "premise-believe") 0)
       (env/bind-at 'premise-retract (premise-state-operator false "premise-retract") 0)))
+
+

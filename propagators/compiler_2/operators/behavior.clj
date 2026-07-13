@@ -1,16 +1,16 @@
-(ns propagators.compiler-2.behavior
+(ns propagators.compiler-2.operators.behavior
   "Compiler-2 behavior operators."
   (:refer-clojure :exclude [* + - /])
   (:require [clojure.core :as core]
             [propagators.cells.value :as value]
-            [propagators.compiler-2.behavior.arithmetic :as compiler-behavior-arithmetic]
-            [propagators.compiler-2.closure-value :as closure-value]
-            [propagators.compiler-2.behavior.history :as behavior-history]
-            [propagators.compiler-2.env :as env]
-            [propagators.compiler-2.helpers :as h]
-            [propagators.compiler-2.operator-value :as operator-value]
-            [propagators.compiler-2.reducer :as compiler-reducer]
-            [propagators.compiler-2.tms :as compiler-tms]
+            [propagators.compiler-2.operators.behavior.arithmetic :as compiler-behavior-arithmetic]
+            [propagators.compiler-2.model.closure-value :as closure-value]
+            [propagators.compiler-2.operators.behavior.history :as behavior-history]
+            [propagators.compiler-2.model.env :as env]
+            [propagators.compiler-2.compiler.basis :as h]
+            [propagators.compiler-2.model.operator-value :as operator-value]
+            [propagators.compiler-2.operators.reducer :as compiler-reducer]
+            [propagators.compiler-2.operators.tms :as compiler-tms]
             [propagators.datastructures.behavior.core :as behavior]
             [propagators.datastructures.behavior-algebra :as hist]
             [propagators.datastructures.compound-object :as obj]
@@ -472,3 +472,5 @@
       bind-behavior-operators
       compiler-tms/bind-distributed-tms-operators
       (env/bind-at '<-> (h/bi-sync-operator) 0)))
+
+

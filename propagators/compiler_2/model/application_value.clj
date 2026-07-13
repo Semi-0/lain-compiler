@@ -1,4 +1,4 @@
-(ns propagators.compiler-2.application-value
+(ns propagators.compiler-2.model.application-value
   "Slot-backed retained IR for compiler-2 applications."
   (:require [propagators.cells.value :as value]
             [propagators.datastructures.compound-object :as obj]))
@@ -42,3 +42,5 @@
        (some? (obj/slot-value x application-context-slot))
        (contains? #{:primitive :closure-cell}
                   (obj/slot-value x application-lowering-slot))))
+
+

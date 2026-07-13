@@ -5,14 +5,14 @@
 `compiler-2.compiler.declarations` now defaults application installation to:
 
 ```clojure
-propagators.compiler-2.retained-application/p:apply-application
+propagators.compiler-2.runtime.retained-application/p:apply-application
 ```
 
 The old transient strategy remains available through the compiler-state seam:
 
 ```clojure
 {:application-installer
- propagators.compiler-2.application/p:apply-application}
+ propagators.compiler-2.runtime.application/p:apply-application}
 ```
 
 The retained default keeps the existing application IR shape for ordinary

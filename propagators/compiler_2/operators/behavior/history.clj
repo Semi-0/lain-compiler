@@ -1,9 +1,9 @@
-(ns propagators.compiler-2.behavior.history
+(ns propagators.compiler-2.operators.behavior.history
   "Compiler-2 behavior history and projection operators."
   (:refer-clojure :exclude [last])
   (:require [clojure.core :as core]
             [propagators.cells.value :as value]
-            [propagators.compiler-2.operator-value :as operator-value]
+            [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.datastructures.behavior.core :as behavior]
             [propagators.datastructures.behavior-algebra :as hist]
             [propagators.datastructures.compound-object :as obj]
@@ -241,3 +241,5 @@
     :activate (fn [network inputs outputs _context-id]
                 (let [[behavior-id index-id] inputs]
                   (split-at-messages network behavior-id index-id (first outputs))))}))
+
+

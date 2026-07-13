@@ -1,13 +1,13 @@
-(ns propagators.compiler-2.helpers
+(ns propagators.compiler-2.compiler.basis
   "Construction helpers and default operator environment for compile-2."
   (:refer-clojure :exclude [* + - /])
   (:require [clojure.core :as core]
             [clojure.set :as set]
             [propagators.cells.value :as value]
-            [propagators.compiler-2.context :as context]
-            [propagators.compiler-2.dispatch :as compiler-dispatch]
-            [propagators.compiler-2.env :as env]
-            [propagators.compiler-2.operator-value :as operator-value]
+            [propagators.compiler-2.model.context :as context]
+            [propagators.compiler-2.compiler.dispatch :as compiler-dispatch]
+            [propagators.compiler-2.model.env :as env]
+            [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.compound-object.network-slot :as network-slot]
             [propagators.datastructures.dependency :as dependency]
@@ -449,7 +449,7 @@
       (let [[expr-id parent-env-id & watch-ids] (vec arg-ids)
             child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)]
         ((requiring-resolve
-          'propagators.compiler-2.application/execute-sub-env-messages-with)
+          'propagators.compiler-2.runtime.application/execute-sub-env-messages-with)
          compile*
          parent-env-id
          expr-id
@@ -459,7 +459,7 @@
     :install (fn [network arg-ids out-id]
                (let [[expr-id parent-env-id & watch-ids] (vec arg-ids)
                      child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)]
-                 (((requiring-resolve 'propagators.compiler-2.application/p:execute-sub-env)
+                 (((requiring-resolve 'propagators.compiler-2.runtime.application/p:execute-sub-env)
                    parent-env-id
                    expr-id
                    watch-ids
@@ -470,7 +470,7 @@
                 (let [[expr-id parent-env-id & _watch-ids] (vec arg-ids)
                       child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)]
                   ((requiring-resolve
-                    'propagators.compiler-2.application/execute-sub-env-messages)
+                    'propagators.compiler-2.runtime.application/execute-sub-env-messages)
                    parent-env-id
                    expr-id
                    child-env-id
@@ -670,7 +670,7 @@
                   :cell (ids/node-id? v)
                   :network (net/net? v)
                   :closure ((requiring-resolve
-                             'propagators.compiler-2.closure-value/closure-info?)
+                             'propagators.compiler-2.model.closure-value/closure-info?)
                             v)
                   :behavior ((requiring-resolve
                               'propagators.datastructures.behavior/behavior-value?)
@@ -708,7 +708,7 @@
 (defn- bind-default-tms-operators
   [compiler-env]
   ((requiring-resolve
-    'propagators.compiler-2.tms/bind-distributed-tms-operators)
+    'propagators.compiler-2.operators.tms/bind-distributed-tms-operators)
    compiler-env))
 
 (defn- operator-env
@@ -769,8 +769,10 @@
 
 (defn behavior-tms-env []
   ((requiring-resolve
-    'propagators.compiler-2.behavior/behavior-tms-env)))
+    'propagators.compiler-2.operators.behavior/behavior-tms-env)))
 
 (defn legacy-central-tms-env []
   ((requiring-resolve
     'propagators.compiler-2.legacy/legacy-central-tms-env)))
+
+

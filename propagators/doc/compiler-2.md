@@ -2,17 +2,17 @@
 
 Source files:
 
-- `propagators/compiler_2/parser.clj`
-- `propagators/compiler_2/ast.clj`
-- `propagators/compiler_2/compiler/cps.clj`
+- `propagators/compiler_2/language/parser.clj`
+- `propagators/compiler_2/language/ast.clj`
+- `propagators/compiler_2/compiler/core.clj`
 - `propagators/compiler_2/compiler/handlers.clj`
 - `propagators/compiler_2/compiler/predicates.clj`
 - `propagators/compiler_2/compiler/declarations.clj`
-- `propagators/compiler_2/application.clj`
-- `propagators/compiler_2/closure_value.clj`
-- `propagators/compiler_2/context.clj`
-- `propagators/compiler_2/env.clj`
-- `propagators/compiler_2/helpers.clj`
+- `propagators/compiler_2/runtime/application.clj`
+- `propagators/compiler_2/model/closure_value.clj`
+- `propagators/compiler_2/model/context.clj`
+- `propagators/compiler_2/model/env.clj`
+- `propagators/compiler_2/compiler/basis.clj`
 - `propagators/compiler_2/tms_behavior.clj`
 - `propagators/datastructures/scope_source.clj`
 - `propagators/datastructures/dependency.clj`
@@ -77,8 +77,8 @@ expression; the network call does not synthesize a hidden result object with
 `same` / `next` slots.
 
 Distributed TMS is the default compiler-2 path. The compiler-facing TMS
-operators live in `propagators.compiler-2.tms`, behavior operators live in
-`propagators.compiler-2.behavior`, and the old
+operators live in `propagators.compiler-2.operators.tms`, behavior operators live in
+`propagators.compiler-2.operators.behavior`, and the old
 `propagators.compiler-2.tms-behavior` namespace is now only a compatibility
 facade. `default-env` binds distributed premise/content inputs, premise
 believe/retract, `tms-closure`, and distributed `premise-closure`.
@@ -309,7 +309,7 @@ compile*  [state expr] -> [state binding]
 `propagators.compiler-common.cps/on` turns a predicate and CPS handler into a
 rule that delegates non-matches. `compose-rules` builds the rule chain and
 `make-compiler` drives it with Clojure's `trampoline`.
-`propagators.compiler-2.compiler.cps/compiler-dispatch` is the production rule
+`propagators.compiler-2.compiler.core/compiler-dispatch` is the production rule
 composition. Its predicates, handlers, and declaration primitives live in
 separate namespaces under `compiler-2.compiler`. A local CPS variant can
 prepend another `on` rule without

@@ -1,4 +1,4 @@
-(ns propagators.compiler-2.parser
+(ns propagators.compiler-2.language.parser
   "Reader-backed source parser for compile-2 expressions.
 
   The surface language is intentionally small. `::` is not valid EDN, so the
@@ -6,7 +6,7 @@
   before reading."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
-            [propagators.compiler-2.ast :as ast])
+            [propagators.compiler-2.language.ast :as ast])
   (:import [java.io PushbackReader StringReader]))
 
 (def network-marker :compiler/network)
@@ -313,3 +313,5 @@
   (parse-form (read-form source)))
 
 (def parse parse-string)
+
+

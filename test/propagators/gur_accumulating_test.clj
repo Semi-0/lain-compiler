@@ -4,7 +4,7 @@
             [propagators.cells.merge :as merge]
             [propagators.cells.value :as value]
             [propagators.compile :as compile]
-            [propagators.compiler-2.env :as compiler-env]
+            [propagators.compiler-2.model.env :as compiler-env]
             [propagators.core :as core]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.scope-source :as scope-source]

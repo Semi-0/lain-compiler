@@ -1,6 +1,6 @@
-(ns propagators.compiler-2.behavior.arithmetic
+(ns propagators.compiler-2.operators.behavior.arithmetic
   "Compiler-2 behavior arithmetic operator wrappers."
-  (:require [propagators.compiler-2.operator-value :as operator-value]
+  (:require [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.datastructures.behavior.arithmetic :as behavior-arithmetic]))
 
 (defn- arithmetic-operator
@@ -33,3 +33,5 @@
    behavior-arithmetic/distributed-behavior-stable-messages
    op
    f))
+
+

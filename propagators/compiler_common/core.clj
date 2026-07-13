@@ -4,11 +4,11 @@
   These functions allocate cells, compile subforms, and retain application IR.
   They deliberately do not decide what literals, closures, or applications mean.
   "
-  (:require [propagators.compiler-2.application-value :as application-value]
-            [propagators.compiler-2.ast :as ast]
-            [propagators.compiler-2.context :as context]
-            [propagators.compiler-2.env :as env]
-            [propagators.compiler-2.helpers :as h]
+  (:require [propagators.compiler-2.model.application-value :as application-value]
+            [propagators.compiler-2.language.ast :as ast]
+            [propagators.compiler-2.model.context :as context]
+            [propagators.compiler-2.model.env :as env]
+            [propagators.compiler-2.compiler.basis :as h]
             [propagators.datastructures.compound-object :as obj]
             [propagators.network :as net]))
 

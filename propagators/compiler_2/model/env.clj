@@ -1,4 +1,4 @@
-(ns propagators.compiler-2.env
+(ns propagators.compiler-2.model.env
   "Compound-object lexical environments for compile-2.
 
   A child environment is a lexical frame with a parent link. Local bindings are
@@ -7,8 +7,8 @@
   "
   (:require [propagators.cells.value :as value]
             [propagators.core :as core]
-            [propagators.compiler-2.ast :as ast]
-            [propagators.compiler-2.lexical-reducer :as lexical-reducer]
+            [propagators.compiler-2.language.ast :as ast]
+            [propagators.compiler-2.operators.lexical-reducer :as lexical-reducer]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.reducer-cell :as reducer]
             [propagators.datastructures.scope-source :as scope-source]
@@ -701,3 +701,5 @@
           (i/slot binding-value-key binding-id slot-id)
           (i/tell local-bindings-id #{sym})
           apply-install-context))))
+
+

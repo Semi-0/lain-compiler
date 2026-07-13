@@ -1,6 +1,6 @@
 (ns propagators.compiler-common.cps
   "Small continuation primitives for stack-safe compiler traversal."
-  (:require [propagators.compiler-2.helpers :as h]
+  (:require [propagators.compiler-2.compiler.basis :as h]
             [propagators.compiler-common.core :as common]))
 
 (defn call

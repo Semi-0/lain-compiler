@@ -1,7 +1,7 @@
 (ns ^:deprecated propagators.compiler-2.cps-core
-  "Deprecated namespace shim; use `propagators.compiler-2.compiler.cps`."
+  "Deprecated namespace shim; use `propagators.compiler-2.compiler.core`."
   (:refer-clojure :exclude [symbol?])
-  (:require [propagators.compiler-2.compiler.cps :as cps]
+  (:require [propagators.compiler-2.compiler.core :as cps]
             [propagators.compiler-2.compiler.handlers :as handlers]
             [propagators.compiler-2.compiler.predicates :as predicates]))
 

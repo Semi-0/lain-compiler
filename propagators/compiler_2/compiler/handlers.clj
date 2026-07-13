@@ -1,11 +1,11 @@
 (ns propagators.compiler-2.compiler.handlers
   "Active continuation-based compiler-2 handlers."
-  (:require [propagators.compiler-2.ast :as ast]
+  (:require [propagators.compiler-2.language.ast :as ast]
             [propagators.compiler-2.compiler.declarations :as declarations]
-            [propagators.compiler-2.env :as env]
-            [propagators.compiler-2.helpers :as h]
-            [propagators.compiler-2.lazy-topology :as lazy-topology]
-            [propagators.compiler-2.operator-value :as operator-value]
+            [propagators.compiler-2.model.env :as env]
+            [propagators.compiler-2.compiler.basis :as h]
+            [propagators.compiler-2.runtime.lazy-topology :as lazy-topology]
+            [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.compiler-common.cps :as cps]
             [propagators.compiler-common.core :as common]))
 

@@ -1,9 +1,9 @@
-(ns propagators.compiler-2.closure-value
+(ns propagators.compiler-2.model.closure-value
   "Slot-backed compiler-2 closure data.
 
   A compiler-2 closure is data only: it records the body AST, lexical
   environment, formal inputs, optional output name, and lexical scope metadata.
-  Application behavior lives in `propagators.compiler-2.application`.
+  Application behavior lives in `propagators.compiler-2.runtime.application`.
   "
   (:require [propagators.cells.value :as value]
             [propagators.datastructures.compound-object :as obj]))
@@ -81,3 +81,5 @@
        (some? (closure-body x))
        (vector? (closure-inputs x))
        (some? (closure-scope x))))
+
+

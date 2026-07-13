@@ -1,4 +1,4 @@
-(ns propagators.compiler-2.lexical-reducer
+(ns propagators.compiler-2.operators.lexical-reducer
   "Reducer policies for retaining lexical declarations without selecting them."
   (:require [propagators.cells.value :as value]
             [propagators.datastructures.reducer-cell :as reducer]
@@ -84,3 +84,5 @@
    {:lexical/symbol sym
     :scope/source source
     :binding binding}))
+
+
