@@ -59,6 +59,76 @@ and is superseded by the fresh result above. The latest semantic-REPL receipt is
 This is not a release receipt. Runtime-server and the full manifest have not
 completed green after all exploratory runtime edits below.
 
+### Accepted lexical decision: one environment authority
+
+The compound environment topology is the only semantic authority for lexical
+names. Compiler state and network dictionaries must not hold an independent
+answer to “which binding does this name mean?”
+
+The working accessor inherited by `b4109c24` had one coherent input shape:
+
+```text
+compound frame
+  :env/local-bindings
+  :env/parent
+  symbol -> binding descriptor -> binding cell
+```
+
+`p:lexical-access-local-first` could therefore decide whether to read locally,
+wait for a declared-but-empty local, or continue to the parent by inspecting
+the frame itself. At that checkpoint the accessor primitive was tested, but
+general compiler symbol traversal and closure application had not yet been
+fully migrated to live environment cells.
+
+The current experiment split that authority:
+
+- `p:declare-canonical-local` records `symbol -> binding ID` only in
+  `lexical-topology-key`;
+- `compile-symbol` reads that dictionary and returns a unique address directly;
+- ambiguous or unknown lookup falls back to the compound-frame accessor;
+- the compound frame can declare the name in `:env/local-bindings` without
+  containing the named binding descriptor the accessor needs to read.
+
+That split is rejected. A binding that exists only in the dictionary can work
+through the compile-time fast path and still be invisible to delayed structural
+lookup. It also makes correctness depend on whether dictionary metadata
+survived a topology diff, closure activation, sub-environment execution, or
+runtime rebuild.
+
+The intended primitives are:
+
+```clojure
+p:declare-binding
+;; [env-id symbol binding-id] -> binding declaration topology
+
+p:lexical-access-local-first
+;; [symbol env-id binding-answer-id] -> nearest binding descriptor
+
+p:binding-value
+;; [binding-answer-id value-answer-id] -> raw binding value connection
+```
+
+`p:declare-binding` is a proposed name for the smallest declaration operation;
+it does not require a new datatype. It stores the symbol and binding descriptor
+in the compound frame. It must not eagerly construct a lexical lookup accessor.
+The accessor network is installed only when a lookup actually needs it.
+
+Compiler symbol traversal is the composition of selection and dereference. A
+known-address shortcut may be reintroduced only as a derived optimization of
+the same compound-frame declaration. Removing the shortcut or deleting its
+cache must not change semantics.
+
+`lexical-topology-key` may remain for graph labels, stable-ID receipts,
+profiling, and cached lookup indexes. Those entries are derived observations,
+not lexical facts. Reservation ownership may also remain compiler bookkeeping,
+but consuming a reservation must produce the compound-frame binding
+declaration before the name is considered bound.
+
+This decision does not restore reducer inheritance. Parent traversal remains a
+local-first structural accessor over fixed compound frames. Scope provenance
+remains an explicit accessor API rather than an envelope attached to every
+ordinary compiler symbol.
+
 ### Runtime experiments preserved, not yet accepted design
 
 - Trace subscription identity was changed from including the complete request
@@ -117,38 +187,50 @@ effect, and the runtime commits the event only after the propagation round.
 
 ### Design gaps to settle
 
-1. **Event display identity.** Decide whether raw-value compatibility events
+1. **Single lexical declaration primitive.** Reuse or extract the smallest
+   existing compound-slot declaration that records a named binding descriptor
+   without installing a lookup accessor. Replace dictionary-only canonical
+   declarations with it.
+2. **Derived fast-path equivalence.** Prove that direct unique-address lookup
+   and `p:lexical-access-local-first` select the same binding. Compilation must
+   remain correct with the derived address cache removed.
+3. **Event display identity.** Decide whether raw-value compatibility events
    use the display ID as both input and source, or whether the effect request
    should carry the original source cell ID. The latter retains more useful
    provenance.
-2. **Display retention.** Confirm that event-content merge plus strongest-event
+4. **Display retention.** Confirm that event-content merge plus strongest-event
    projection completely replaces `behavior/retained-value`, including
    retraction and block-edit epochs.
-3. **Retry lifecycle.** Prove that selective unresolved-application retry
+5. **Retry lifecycle.** Prove that selective unresolved-application retry
    repairs late operators without replaying already delivered effects.
-4. **Trace subscription lifecycle.** Prove replacement, removal, and block-edit
+6. **Trace subscription lifecycle.** Prove replacement, removal, and block-edit
    behavior for the stable target-based subscription identity.
-5. **Dynamic topology repair.** Applications remain connected to the binding
+7. **Dynamic topology repair.** Applications remain connected to the binding
    address resolved when declared. Later same-name definitions do not repair
    old topology; any future repair must be an explicit declarative effect.
-6. **Application topology truth.** Retained application may choose an output
+8. **Application topology truth.** Retained application may choose an output
    only after the operator arrives. Its eventual input/output write set must be
    represented explicitly before graph reachability can support garbage
    collection.
-7. **Performance acceptance.** The chained-GUR depths 1, 5, 10, and 50 still
+9. **Performance acceptance.** The chained-GUR depths 1, 5, 10, and 50 still
    need fresh measurements after correctness is green.
 
 ### Next session, in order
 
-1. Replace only `display-behavior-update` with a small event-normalization
-   function and remove the behavior dependency from runtime display effects.
-2. Add focused tests for active event update, retraction, repeated raw-value
-   compatibility, and block-edit epoch replacement.
-3. Run runtime-server and semantic-REPL gates before changing trace or retry
-   code further.
-4. Revert or keep each trace/retry experiment based on those named tests.
-5. Run the full compiler gates, full manifest, and only then the chained-GUR
-   benchmark.
+1. Establish one compound-frame binding declaration primitive and route local,
+   free, definition, closure, argument, and output declarations through it.
+2. Make `compile-symbol` use local-first selection plus `p:binding-value` as the
+   correctness baseline. Keep the direct address path disabled until parity is
+   proven.
+3. Migrate tests to read final lexical results through `:cell` and inner
+   definitions through captured environments; outer lookup remains valid only
+   for names actually declared in the outer frame.
+4. Run the focused and broad compiler gates and classify any remaining semantic
+   failures before changing runtime behavior.
+5. Replace `display-behavior-update` with event normalization, then run
+   runtime-server and semantic-REPL gates.
+6. Revert or keep each trace/retry experiment based on named tests.
+7. Run the full manifest and only then the chained-GUR benchmark.
 
 ## Supported boundary
 
@@ -168,6 +250,8 @@ supported.
 ## Architectural invariants
 
 - CPS compilation declares topology; runtime owns evaluation.
+- The compound environment is the sole semantic authority for lexical names.
+  Network dictionaries may contain only derived indexes and diagnostics.
 - Compiler-created lexical frames use `p:scope-frame` and do not inherit the
   reducer.
 - `p:sub-env` remains eager compatibility only.
@@ -182,7 +266,7 @@ supported.
 - Delayed closure and lazy topology retain the selected local compiler.
 - Runtime topology realization is additive and does not patch the scheduler.
 
-## Implemented repair
+## Current repair state
 
 ### Fixed frames and topology lookup
 
@@ -203,6 +287,13 @@ Compiler symbol traversal now distinguishes four cases:
 The final symbol of a form therefore appears directly in `:cell` and
 `compiler/result` when it has a canonical address. No accessor is materialized
 and no ordinary propagator unwraps a scope value.
+
+This four-way traversal is the current experiment, not the accepted final
+authority model. Its dictionary-only canonical declaration is the exact seam
+to replace. The desired baseline always declares the binding in the compound
+frame and composes local-first selection with raw dereference; a direct result
+cell is then an optimization or compiler-level result syntax, not a second
+lexical representation.
 
 ### Reservation lifecycle
 
