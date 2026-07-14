@@ -86,6 +86,21 @@
           (is (= (semantic-value expected-net (:cell expected))
                  (semantic-value actual-net (:cell actual)))))))))
 
+(deftest lexical-scope-construction-restores-and-reuses-frames
+  (let [root-id (ids/new-node-id)
+        [network _] (env/import-environment net/empty-net root-id
+                                            (h/default-env))
+        compiled (compiler/compile-expr
+                  (ast/let-cell ['x] (ast/sym 'x))
+                  root-id
+                  {:net network :seed :restore-let-env})]
+    (is (= root-id (:env compiled))))
+  (let [env-id (ids/new-node-id)
+        network (nb/ensure-cell net/empty-net env-id)
+        [props installed] ((env/p:sub-env env-id env-id) network)]
+    (is (empty? props))
+    (is (= network installed))))
+
 (deftest cps-compilation-is-stack-safe
   (testing "five thousand nested lexical scopes"
     (let [expr (reduce (fn [body idx]

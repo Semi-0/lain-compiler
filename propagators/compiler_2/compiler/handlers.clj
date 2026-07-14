@@ -17,23 +17,40 @@
   [_compile-k state expr k]
   (finish k (h/new-cell state :literal (ast/value expr))))
 
-(defn compile-symbol
-  [_compile-k state expr k]
-  (let [sym (ast/name expr)
+(defn- compile-accessed-symbol
+  [state sym k]
+  (let [binding-id (h/node-id state [:lexical-access sym :binding])
         value-id (h/node-id state [:lexical-access sym :value])
-        network (h/ensure-cell (:net state) value-id)
-        [props compiled]
-        ((env/p:local-first-lexical-value
-          [:compiler-2 (:seed state) (:path state) sym]
-          sym
-          (:env state)
-          value-id)
-         network)]
+        network (-> (:net state)
+                    (h/ensure-cell binding-id)
+                    (h/ensure-cell value-id))
+        [access-props with-access]
+        ((env/p:lexical-access-local-first sym (:env state) binding-id) network)
+        [value-props compiled]
+        ((env/p:binding-value binding-id value-id) with-access)]
     (cps/continue k
                   (-> state
                       (assoc :net compiled)
-                      (h/add-props props))
+                      (h/add-props (into (vec access-props) value-props)))
                   (env/cell-binding value-id))))
+
+(defn- compile-free-symbol
+  [state sym k]
+  (let [binding-id (h/node-id state [:free-symbol sym])
+        declared (-> state
+                     (update :net h/ensure-cell binding-id)
+                     (declarations/reserve-fixed-local sym binding-id))]
+    (cps/continue k declared (env/cell-binding binding-id))))
+
+(defn compile-symbol
+  [_compile-k state expr k]
+  (let [sym (ast/name expr)
+        {:keys [status binding/id]}
+        (env/lexical-binding-status (:net state) sym (:env state))]
+    (case status
+      :found (cps/continue k state (env/cell-binding id))
+      :missing (compile-free-symbol state sym k)
+      (compile-accessed-symbol state sym k))))
 
 (defn compile-sequence
   [compile-k state expr k]
@@ -41,9 +58,12 @@
 
 (defn compile-let-cell
   [compile-k state expr k]
-  (let [[body-state _bindings]
+  (let [outer-env (:env state)
+        [body-state _bindings]
         (declarations/declare-local-cells state :let-cell-env (ast/names expr))]
-    (cps/call compile-k body-state (ast/body expr) k)))
+    (cps/call compile-k body-state (ast/body expr)
+              (fn [state' binding]
+                (cps/continue k (assoc state' :env outer-env) binding)))))
 
 (defn compile-let
   [compile-k state expr k]
@@ -158,6 +178,18 @@
   (and (env/binding-id operator-binding)
        (fn? (:application/cell-declarer state))))
 
+(defn- known-operator
+  "Use a presently known primitive declaration strategy without changing how
+  ordinary symbol compilation exposes its canonical cell."
+  [binding state]
+  (if-let [id (env/binding-id binding)]
+    (let [candidate (h/strongest-or-nothing (:net state) id)]
+      (if (or (operator-value/operator-closure? candidate)
+              (fn? candidate))
+        candidate
+        binding))
+    binding))
+
 (defn compile-application
   [compile-k state expr k]
   (let [base-path (:path state)
@@ -168,7 +200,7 @@
      (fn [state' op-binding]
        (let [state' (common/with-path state' base-path)
              [state'' operator-binding out-id]
-             (common/prepare-application (fn [binding _state] binding)
+             (common/prepare-application known-operator
                                          state' op op-binding)
              compile* (:compiler state'')
              direct-compiler

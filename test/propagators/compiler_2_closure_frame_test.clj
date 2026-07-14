@@ -361,10 +361,11 @@
         declared (core/run-tasks
                   (tq/enqueue-all tq/empty-queue (:props compiled))
                   (:net compiled))
-        map-id (compiled-binding-id compiled 'lexical-map-chain)
-        parent-id (compiled-binding-id compiled 'parent-step)
-        local-id (compiled-binding-id compiled 'local-step)
+        map-id (:cell compiled)
         map-closure (net/network-cell-strongest declared map-id)
+        captured-env (closure-value/closure-env map-closure)
+        parent-id (env/resolve-binding-id declared captured-env 'parent-step)
+        local-id (env/resolve-binding-id declared captured-env 'local-step)
         parent (net/network-cell-strongest declared parent-id)
         local (net/network-cell-strongest declared local-id)
         frame-env (application/closure-body-env

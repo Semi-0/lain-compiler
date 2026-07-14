@@ -303,7 +303,15 @@
 (defn declare-fixed-local
   [state sym binding-id]
   (install-env-topology state
-                        (env/p:declare-fixed-local sym (:env state) binding-id)))
+                        (env/p:declare-canonical-local sym (:env state)
+                                                       binding-id)))
+
+(defn reserve-fixed-local
+  [state sym binding-id]
+  (install-env-topology state
+                        (env/p:reserve-canonical-local sym (:env state)
+                                                       binding-id
+                                                       (:seed state))))
 
 (defn declare-local-cells
   [state role names]
@@ -313,7 +321,7 @@
        (let [binding-id (h/stable-node-id :compiler-2 :binding child-id name)
              state' (-> state
                         (update :net h/ensure-cell binding-id)
-                        (declare-fixed-local name binding-id))]
+                        (reserve-fixed-local name binding-id))]
          [state' (assoc bindings name (env/cell-binding binding-id))]))
      [state' {}]
      names)))
@@ -344,16 +352,45 @@
   ([state name inputs output body]
    (let [{closure-output :output closure-body :body}
          (normalize-closure-output (hidden-return-symbol state) output body)
-         closure-id (h/node-id state :closure)
-         closure-object (closure-value/closure-object (:env state)
+         proposed-id (h/node-id state :closure)
+         reserved-id (when name
+                       (env/reserved-binding-id (:net state) (:env state) name
+                                                (:seed state)))
+         closure-id (or reserved-id proposed-id)
+         state' (if (and name (nil? reserved-id))
+                  (-> state
+                      (update :net h/ensure-cell closure-id)
+                      (reserve-fixed-local name closure-id))
+                  state)
+         closure-object (closure-value/closure-object (:env state')
                                                       closure-body
                                                       inputs
                                                       closure-output
-                                                      (:env state))
+                                                      (:env state'))
          closure-binding (env/compound-binding closure-id)
-         state' (update state :net h/seed-cell closure-id closure-object)]
-     [state'
+         declared (update state' :net h/seed-cell closure-id closure-object)]
+     [declared
       closure-binding])))
+
+(defn- fresh-definition-id
+  [state name source-id]
+  (h/stable-node-id :compiler-2 :definition (:env state) name source-id))
+
+(defn- definition-target-id
+  [state name source-id]
+  (or (env/reserved-binding-id (:net state) (:env state) name (:seed state))
+      (when (:reuse-existing-bindings? state)
+        (env/local-binding-id (:net state) (:env state) name))
+      (fresh-definition-id state name source-id)))
+
+(defn- copy-binding-value
+  [state source-id target-id]
+  (if (= source-id target-id)
+    state
+    (let [[prop-id network] ((stdlib-prop/id source-id target-id) (:net state))]
+      (-> state
+          (assoc :net network)
+          (h/add-props [prop-id])))))
 
 (defn define-binding
   [state name binding]
@@ -361,24 +398,38 @@
     (when-not source-id
       (throw (ex-info "definition must declare an addressed binding"
                       {:name name :binding binding})))
-    (let [target-id (h/stable-node-id :compiler-2 :definition
-                                      (:env state) name source-id)
+    (let [reserved-id (env/reserved-binding-id (:net state) (:env state) name
+                                                (:seed state))
+          reused-id (when (:reuse-existing-bindings? state)
+                      (env/local-binding-id (:net state) (:env state) name))
+          target-id (definition-target-id state name source-id)
           target-binding (if (env/compound-binding? binding)
                            (env/compound-binding target-id)
                            (env/cell-binding target-id))
-          state' (update state :net h/ensure-cell target-id)
-          state'' (if (= source-id target-id)
-                    state'
-                    (let [[prop-id network]
-                          ((stdlib-prop/id source-id target-id) (:net state'))]
-                      (-> state'
-                          (assoc :net network)
-                          (h/add-props [prop-id]))))]
-      [(declare-fixed-local state'' name target-id) target-binding])))
+          state' (-> state
+                     (update :net h/ensure-cell target-id)
+                     (copy-binding-value source-id target-id))
+          declared (if (or reserved-id reused-id)
+                     state'
+                     (declare-fixed-local state' name target-id))
+          consumed (update declared :net
+                           env/consume-reserved-binding
+                           (:env state) name target-id (:seed state))]
+      [consumed target-binding])))
 
 (defn- define-operator-binding
   [state name operator result-binding]
-  (define-binding state name result-binding))
+  (let [source-id (env/binding-id result-binding)
+        reserved-id (env/reserved-binding-id (:net state) (:env state) name
+                                              (:seed state))
+        target-id (or reserved-id source-id)
+        declared (if reserved-id
+                   state
+                   (reserve-fixed-local state name target-id))
+        seeded (update declared :net h/seed-cell target-id operator)
+        consumed (update seeded :net env/consume-reserved-binding
+                         (:env state) name target-id (:seed state))]
+    [consumed (env/cell-binding target-id)]))
 
 (defn lower-let
   [expr]
@@ -392,12 +443,16 @@
                   (apply ast/sequence*
                          (concat binding-forms [(ast/body expr)])))))
 
-(defn- constraint-env
-  [lexical-env inputs arg-ids]
-  (reduce (fn [scoped-env [sym id]]
-            (env/bind-local scoped-env sym (env/cell-binding id)))
-          (env/sub-env lexical-env)
-          (map vector inputs arg-ids)))
+(defn- declare-constraint-environment
+  [state lexical-env name inputs arg-ids]
+  (let [[scoped _env-id]
+        (declare-child-environment (assoc state :env lexical-env)
+                                   [:constraint name :env]
+                                   inputs)]
+    (reduce (fn [declared [sym id]]
+              (declare-fixed-local declared sym id))
+            scoped
+            (map vector inputs arg-ids))))
 
 (defn- constraint-argument-ids
   [name inputs arg-bindings]
@@ -429,8 +484,11 @@
        (fn [state' arg-bindings]
          (let [arg-ids (constraint-argument-ids name inputs arg-bindings)
                body-state (h/child
-                           (assoc state'
-                                  :env (constraint-env lexical-env inputs arg-ids))
+                           (declare-constraint-environment state'
+                                                           lexical-env
+                                                           name
+                                                           inputs
+                                                           arg-ids)
                            [:constraint name])]
            (cps/call
             compile-k body-state body
@@ -442,10 +500,13 @@
     (fn [state operand-forms _out-id]
       (let [[state' arg-bindings] (common/compile-args compile* state operand-forms)
             arg-ids (constraint-argument-ids name inputs arg-bindings)]
-        (let [constraint-env (constraint-env lexical-env inputs arg-ids)
+        (let [body-state (declare-constraint-environment state'
+                                                         lexical-env
+                                                         name
+                                                         inputs
+                                                         arg-ids)
               [state'' body-binding] (compile*
-                                      (h/child (assoc state' :env constraint-env)
-                                               [:constraint name])
+                                      (h/child body-state [:constraint name])
                                       body)]
           (constraint-result state' state'' arg-ids body-binding))))}))
 

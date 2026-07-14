@@ -229,20 +229,6 @@
   [network key]
   (get (runtime-topology network) key))
 
-(defn lexical-value-address
-  "Return the canonical binding cell declared for one lexical value cell."
-  [network value-id]
-  (or (get-in (net/network-dict-entry network lexical-topology-key)
-              [:value-addresses value-id])
-      (runtime-topology-value network [:value value-id])))
-
-(defn- declare-value-address
-  [network value-id binding-id]
-  (net/update-net-dict-entry
-   network
-   lexical-topology-key
-   #(assoc-in (or % {}) [:value-addresses value-id] binding-id)))
-
 (defn- declare-frame-addresses
   ([network env-id source-id chain-id]
    (declare-frame-addresses network env-id source-id chain-id nil))
@@ -260,10 +246,54 @@
   (net/update-net-dict-entry
    network
    lexical-topology-key
-   #(update-in (or % {})
-               [:frames env-id :bindings sym]
-               (fnil conj #{})
-               binding-id)))
+   #(-> (or % {})
+        (update-in [:frames env-id :bindings sym]
+                   (fnil conj #{})
+                   binding-id)
+        (assoc-in [:frames env-id :current-bindings sym] binding-id))))
+
+(defn- reserve-binding-address
+  [network env-id sym binding-id owner]
+  (net/update-net-dict-entry
+   network
+   lexical-topology-key
+   #(assoc-in (or % {}) [:reservations env-id sym]
+              {:binding/id binding-id
+               :reservation/owner owner})))
+
+(defn- reservation-binding-id [reservation]
+  (if (ids/node-id? reservation)
+    reservation
+    (:binding/id reservation)))
+
+(defn reserved-binding-id
+  "Return the unconsumed fixed address reserved for `sym` in this frame."
+  ([network env-id sym]
+   (some-> (get-in (net/network-dict-entry network lexical-topology-key)
+                   [:reservations env-id sym])
+           reservation-binding-id))
+  ([network env-id sym owner]
+   (let [reservation
+         (get-in (net/network-dict-entry network lexical-topology-key)
+                 [:reservations env-id sym])]
+     (when (= owner (:reservation/owner reservation))
+       (reservation-binding-id reservation)))))
+
+(defn consume-reserved-binding
+  "Consume the current-frame reservation for `sym` when it names `binding-id`."
+  ([network env-id sym binding-id]
+   (consume-reserved-binding network env-id sym binding-id nil))
+  ([network env-id sym binding-id owner]
+   (net/update-net-dict-entry
+    network
+    lexical-topology-key
+    (fn [topology]
+      (let [reservation (get-in topology [:reservations env-id sym])]
+        (if (and (= binding-id (reservation-binding-id reservation))
+                 (or (nil? owner)
+                     (= owner (:reservation/owner reservation))))
+          (update-in topology [:reservations env-id] dissoc sym)
+          topology))))))
 
 (defn- p:extend-chain
   [chain-id scope-id out-id]
@@ -493,15 +523,14 @@
           apply-install-context))))
 
 (defn p:lexical-access
-  "Install reducer-backed lexical access.
+  "Install scoped local-first access through lexical frame topology.
 
-  The environment's binding reducer is the single lexical authority. The
-  structural frame walker remains available as `p:structural-lexical-access`
-  for compatibility callers, but is not part of compiler lookup."
+  Reducer-backed selection remains available explicitly as
+  `p:reducer-lexical-access`; compiler-created frames do not inherit it."
   ([sym env-id out-id]
-   (p:lexical-access [:lexical sym env-id out-id] sym env-id out-id))
-  ([lookup-key sym env-id out-id]
-   (p:reducer-lexical-access lookup-key sym env-id out-id)))
+   (p:structural-lexical-access sym env-id out-id))
+  ([_lookup-key sym env-id out-id]
+   (p:structural-lexical-access sym env-id out-id)))
 
 (declare local-first-route-effects)
 
@@ -603,6 +632,41 @@
     (compound-binding? x) (:binding/id x)
     :else nil))
 
+(defn p:binding-value
+  "Dereference a raw lexical binding descriptor into `value-answer-id`.
+
+  Selection and dereference are deliberately separate: lexical access chooses
+  a binding address, while this installer only declares the identity edge from
+  that address to the ordinary value cell."
+  [binding-answer-id value-answer-id]
+  (let [install-key [:compiler-2 :binding-value
+                     binding-answer-id value-answer-id]
+        activate
+        (fn [_inputs _outputs network]
+          (if-let [bound-id
+                   (some-> (net/network-cell-strongest network binding-answer-id)
+                           binding-id)]
+            {:effects
+             (-> (i/context network [install-key bound-id])
+                 (i/install :binding-value
+                            stdlib-prop/id
+                            bound-id
+                            value-answer-id)
+                 i/effects)}
+            []))]
+    (fn [network]
+      (let [network* (reduce nb/ensure-cell network
+                             [binding-answer-id value-answer-id])
+            [prop-id installed]
+            ((prop/construct-propagator
+              (stable-node-id install-key :prop)
+              :lexical-access/binding-value
+              activate
+              [binding-answer-id]
+              [])
+             network*)]
+        [[prop-id] installed]))))
+
 (defn- p:scoped-bound-value
   [candidate bound-id out-id]
   ((prop/primitive-propagator
@@ -690,41 +754,111 @@
                          network*)]
         [[prop-id] n]))))
 
-(defn- fixed-lexical-binding-address
+(defn- local-binding-ids
+  [network env-id sym]
+  (let [bindings (get-in (net/network-dict-entry network lexical-topology-key)
+                         [:frames env-id :bindings sym])
+        runtime-ids
+        (->> (runtime-topology network)
+             (keep (fn [[key id]]
+                     (when (and (= :binding (first key))
+                                (= env-id (second key))
+                                (= sym (nth key 2 nil)))
+                       id)))
+             set)
+        bound-ids (into (set bindings) runtime-ids)]
+    bound-ids))
+
+(defn local-binding-id
+  "Return one unambiguous fixed binding address in exactly `env-id`."
+  [network env-id sym]
+  (or (get-in (net/network-dict-entry network lexical-topology-key)
+              [:frames env-id :current-bindings sym])
+      (runtime-topology-value network [:current-binding env-id sym])
+      (let [bound-ids (local-binding-ids network env-id sym)]
+        (when (= 1 (count bound-ids))
+          (first bound-ids)))))
+
+(defn lexical-binding-status
+  "Describe fixed-topology resolution as `:found`, `:missing`, or `:ambiguous`.
+
+  `:unknown` means the environment itself is not compiler-owned topology and
+  should retain structural accessor lookup."
   [network sym env-id]
-  (let [frames (:frames (net/network-dict-entry network lexical-topology-key))
-        active-chain-id (get-in frames [env-id :scope/chain-id])]
+  (let [frames (:frames (net/network-dict-entry network lexical-topology-key))]
     (loop [frame-id env-id
            seen #{}]
       (when-not (contains? seen frame-id)
-        (let [{:keys [scope/source-id bindings parent-id]}
+        (let [{:keys [parent-id] :as frame}
               (get frames frame-id)
-              source-id (or source-id
-                            (runtime-topology-value
-                             network [:frame frame-id :scope/source-id]))
-              active-chain-id (or active-chain-id
-                                  (runtime-topology-value
-                                   network [:frame env-id :scope/chain-id]))
+              runtime-frame? (or (runtime-topology-value
+                                  network [:frame frame-id :scope/source-id])
+                                 (runtime-topology-value
+                                  network [:frame frame-id :scope/chain-id]))
+              known-frame? (or frame runtime-frame?)
               parent-id (or parent-id
                             (runtime-topology-value
                              network [:frame frame-id :parent-id]))
-              runtime-bound-ids
-              (->> (runtime-topology network)
-                   (keep (fn [[key id]]
-                           (when (and (= :binding (first key))
-                                      (= frame-id (second key))
-                                      (= sym (nth key 2 nil)))
-                             id)))
-                   set)
-              bound-ids (into (set (get bindings sym)) runtime-bound-ids)]
+              bound-id (local-binding-id network frame-id sym)
+              bound-ids (local-binding-ids network frame-id sym)]
           (cond
-            (= 1 (count bound-ids))
-            (let [bound-id (first bound-ids)]
-              (when (every? ids/node-id?
-                            [bound-id source-id active-chain-id])
-                {:binding/id bound-id
-                 :scope/source-id source-id
-                 :scope/chain-id active-chain-id}))
+            bound-id
+            {:status :found :binding/id bound-id}
+
+            (seq bound-ids)
+            {:status :ambiguous}
+
+            parent-id
+            (recur parent-id (conj seen frame-id))
+
+            known-frame?
+            {:status :missing}
+
+            :else
+            {:status :unknown}))))))
+
+(defn lexical-binding-id
+  "Return the nearest unambiguous fixed binding address for `sym`."
+  [network sym env-id]
+  (let [{:keys [status binding/id]}
+        (lexical-binding-status network sym env-id)]
+    (when (= :found status) id)))
+
+(defn binding-names
+  "Return the declared lexical name for every canonical binding address."
+  [network]
+  (let [frames (:frames (net/network-dict-entry network lexical-topology-key))]
+    (into {}
+          (mapcat (fn [[_env-id {:keys [bindings]}]]
+                    (for [[sym ids] bindings
+                          id ids]
+                      [id sym])))
+          frames)))
+
+(defn- fixed-lexical-binding-address
+  [network sym env-id]
+  (let [frames (:frames (net/network-dict-entry network lexical-topology-key))
+        active-chain-id (or (get-in frames [env-id :scope/chain-id])
+                            (runtime-topology-value
+                             network [:frame env-id :scope/chain-id]))]
+    (loop [frame-id env-id
+           seen #{}]
+      (when-not (contains? seen frame-id)
+        (let [source-id (or (get-in frames [frame-id :scope/source-id])
+                            (runtime-topology-value
+                             network [:frame frame-id :scope/source-id]))
+              parent-id (or (get-in frames [frame-id :parent-id])
+                            (runtime-topology-value
+                             network [:frame frame-id :parent-id]))
+              bound-id (local-binding-id network frame-id sym)
+              bound-ids (local-binding-ids network frame-id sym)]
+          (cond
+            bound-id
+            (when (every? ids/node-id?
+                          [bound-id source-id active-chain-id])
+              {:binding/id bound-id
+               :scope/source-id source-id
+               :scope/chain-id active-chain-id})
 
             (seq bound-ids)
             nil
@@ -738,36 +872,36 @@
 (defn lexical-topology-effects
   "Lower compile-time lexical addresses into delayed runtime declarations."
   [network]
-  (let [{:keys [frames value-addresses]}
+  (let [{:keys [frames]}
         (net/network-dict-entry network lexical-topology-key)]
     (vec
-     (concat
-      (mapcat
-       (fn [[env-id {:keys [scope/source-id scope/chain-id parent-id bindings]}]]
-         (concat
-          (keep identity
-                [(when source-id
-                   (fvm/bind-name lexical-topology-scope
-                                  [:frame env-id :scope/source-id]
-                                  source-id))
-                 (when chain-id
-                   (fvm/bind-name lexical-topology-scope
-                                  [:frame env-id :scope/chain-id]
-                                  chain-id))
-                 (when parent-id
-                   (fvm/bind-name lexical-topology-scope
-                                  [:frame env-id :parent-id]
-                                  parent-id))])
-          (for [[sym ids] bindings
-                id ids]
-            (fvm/bind-name lexical-topology-scope
-                           [:binding env-id sym id]
-                           id))))
-       frames)
-      (for [[value-id binding-id] value-addresses]
-        (fvm/bind-name lexical-topology-scope
-                       [:value value-id]
-                       binding-id))))))
+     (mapcat
+      (fn [[env-id {:keys [scope/source-id scope/chain-id parent-id bindings
+                           current-bindings]}]]
+        (concat
+         (keep identity
+               [(when source-id
+                  (fvm/bind-name lexical-topology-scope
+                                 [:frame env-id :scope/source-id]
+                                 source-id))
+                (when chain-id
+                  (fvm/bind-name lexical-topology-scope
+                                 [:frame env-id :scope/chain-id]
+                                 chain-id))
+                (when parent-id
+                  (fvm/bind-name lexical-topology-scope
+                                 [:frame env-id :parent-id]
+                                 parent-id))])
+         (for [[sym ids] bindings
+               id ids]
+           (fvm/bind-name lexical-topology-scope
+                          [:binding env-id sym id]
+                          id))
+         (for [[sym id] current-bindings]
+           (fvm/bind-name lexical-topology-scope
+                          [:current-binding env-id sym]
+                          id))))
+      frames))))
 
 (defn p:direct-lexical-value
   "Read a known canonical binding cell without constructing reducer access."
@@ -777,7 +911,7 @@
           ((p:scope-dependent-read lookup-key
                                    source-id chain-id bound-id value-answer-id)
            network)]
-      [[prop-id] (declare-value-address installed value-answer-id bound-id)])))
+      [[prop-id] installed])))
 
 (defn p:reducer-lexical-value
   "Resolve a binding through the lexical reducer, then read its live value."
@@ -988,11 +1122,13 @@
   "Accessor-built parent -> child scope frame with eager reducer inheritance."
   [parent-env-id child-env-id]
   (fn [network]
-    (let [[frame-props framed] ((p:scope-frame parent-env-id child-env-id)
-                                network)
-          [binding-props inherited]
-          ((p:inherit-bindings parent-env-id child-env-id) framed)]
-      [(into (vec frame-props) binding-props) inherited])))
+    (if (= parent-env-id child-env-id)
+      [[] network]
+      (let [[frame-props framed] ((p:scope-frame parent-env-id child-env-id)
+                                  network)
+            [binding-props inherited]
+            ((p:inherit-bindings parent-env-id child-env-id) framed)]
+        [(into (vec frame-props) binding-props) inherited]))))
 
 (defn p:bind-local
   "Bind one fixed symbol into a fresh child env frame.
@@ -1077,6 +1213,34 @@
               apply-install-context)]
       [(into (vec declaration-props) slot-props)
        (declare-binding-address installed env-id sym binding-id)])))
+
+(defn p:declare-canonical-local
+  "Record one compiler-owned fixed address without materializing a slot path."
+  [sym env-id binding-id]
+  (fn [network]
+    [[] (-> network
+            (nb/ensure-cell binding-id)
+            (declare-binding-address env-id sym binding-id))]))
+
+(defn p:reserve-fixed-local
+  "Declare a fixed local and mark its address for the next same-frame `def`."
+  ([sym env-id binding-id]
+   (p:reserve-fixed-local sym env-id binding-id nil))
+  ([sym env-id binding-id owner]
+   (fn [network]
+     (let [[props declared] ((p:declare-fixed-local sym env-id binding-id)
+                             network)]
+       [props (reserve-binding-address declared env-id sym binding-id owner)]))))
+
+(defn p:reserve-canonical-local
+  "Record and reserve a compiler-owned fixed address without slot topology."
+  ([sym env-id binding-id]
+   (p:reserve-canonical-local sym env-id binding-id nil))
+  ([sym env-id binding-id owner]
+   (fn [network]
+     (let [[props declared] ((p:declare-canonical-local sym env-id binding-id)
+                             network)]
+       [props (reserve-binding-address declared env-id sym binding-id owner)]))))
 
 (defn- imported-binding-id
   [env-id sym source]

@@ -1,399 +1,331 @@
 # Compiler-2 Progress and Priorities
 
-Status snapshot: 2026-07-13, after the CPS, live lexical environment, and
-runtime boundary work on `main`.
+Status snapshot: 2026-07-14, on
+`codex/compiler-2-closure-correctness`.
 
-This document is a checkpoint, not a claim that compiler-2 is green. It records
-what is implemented, what has focused evidence, what remains uncertain, and the
-order in which the remaining work should be done.
+This document records the supported boundary and the evidence still required.
+It is not a correctness claim until every gate below is green.
+
+## Nightly handoff
+
+This branch is an experimental checkpoint, not the planned green repair. It
+preserves the fixed-frame lexical work and the runtime investigations so the
+next session can resume from evidence instead of reconstructing the failure.
+
+### Progress preserved here
+
+- Compiler-created lexical frames no longer inherit the reducer.
+- Ordinary CPS symbol compilation returns a canonical binding cell when the
+  address is unambiguous. Structural lookup and raw binding dereference remain
+  separate declarations for ambiguous topology.
+- Local reservations distinguish same-compilation filling from later
+  shadowing. Named closures reserve their name before compiling their body.
+- Delayed closure, retained application, and lazy topology paths consume raw or
+  canonical cells rather than scope envelopes.
+- CPS `let-cell` compilation restores the outer environment after compiling
+  its body.
+- A same-ID `p:sub-env` request is idempotent. This prevents a runtime rebuild
+  from declaring an environment as its own parent and falling into unbounded
+  structural lookup.
+- Runtime and graph inspection resolve names from environment topology rather
+  than assuming the environment is still a host map.
+- Canonical declarations removed the earlier accessor-network explosion in the
+  focused recursive list and 100-hop sync diagnostics.
+
+The fresh pre-commit gates on this working tree are:
+
+- focused closure/composition/CPS/organization/list: 121 assertions, zero
+  failures/errors;
+- separate behavior compiler: 45 assertions, zero failures/errors;
+- TMS data structures: 37 assertions, zero failures/errors;
+- `propagators.compile-2-test`: 323 passing assertions, 6 failures, and
+  49 errors across 16 test cases.
+
+The most common broad-suite error is `expected node-id token {:x nil}`. Several
+tests still use an outer or pre-declaration environment to find definitions
+that now correctly live in a restored inner `let-cell` frame. The focused
+closure-frame test exposed the same stale assumption and became green after it
+resolved helper closures from the returned closure's captured environment.
+That is evidence for a test migration, not evidence that all 49 errors are
+harmless: the canonical-symbol and reservation failures, late applications,
+compound declarations, and distributed TMS cases still require individual
+classification.
+
+An earlier session receipt had 479 green assertions across compile-2, behavior,
+and TMS before the final CPS lexical-scope restoration. It is historical only
+and is superseded by the fresh result above. The latest semantic-REPL receipt is
+35 green assertions, but it was not rerun during this pre-commit checkpoint.
+
+This is not a release receipt. Runtime-server and the full manifest have not
+completed green after all exploratory runtime edits below.
+
+### Runtime experiments preserved, not yet accepted design
+
+- Trace subscription identity was changed from including the complete request
+  to `[:trace/subscribe target-id]`. This aims to keep one subscription stable
+  across runtime retries, but has not passed the full runtime gate.
+- Expression rebuild now retries only compiled forms with an unresolved
+  application operator. This avoids replaying every ordinary expression after
+  an unrelated declaration, but its late-definition and effect-delivery
+  contract needs broader tests.
+- `block-at` now reads a block only in its two-argument form. Its explicit
+  three-argument form writes the supplied source to the target block without a
+  reverse copy into the source cell.
+- Topology binding labels were added to semantic graph projection so canonical
+  cells remain named without materializing lexical accessor networks.
+- Compiler-2 behavior-history integration tests are reader-discarded. Event,
+  TMS, ordinary closure, and the separate behavior compiler remain in scope.
+
+### Proven remaining runtime failure
+
+The unresolved trace/display failure is no longer attributed to lexical
+lookup. Profiling a trace target showed that it first held a valid update and
+then became contradictory when the propagator named
+`[:compound-object/network-slot :base]` activated. That reader belongs to the
+layered behavior projection installed for the display path.
+
+The direct cause is in the runtime effect evaluator: every
+`:tui/write-display` payload is converted by `display-behavior-update` into a
+`behavior/retained-value` before it is committed to the display cell. Therefore
+an otherwise ordinary event/display boundary enters behavior history, layered
+base projection, and behavior merge semantics. Continuing to patch that path
+would violate the current scope and obscure whether the core compiler repair is
+correct.
+
+### Proposed smallest display boundary
+
+Keep `be:block` as a declarative event-backed display operator:
+
+```text
+source event
+  -> be:block propagator
+  -> :tui/write-display effect
+  -> runtime commits the event update to the display cell
+  -> the view projects the strongest active event value
+```
+
+The event cell protocol already merges active updates and retractions, and the
+TUI annotation layer already projects event content. No behavior reducer or
+layered behavior unwrap is needed. For source compatibility, a raw payload can
+be normalized at the runtime boundary to
+`(event/active-event display-id display-id tick payload)`; an existing event
+fact, content value, or projection should pass through unchanged.
+
+This keeps declaration separate from evaluation: the compiler installs the
+`be:block` application topology, the propagator declares an external display
+effect, and the runtime commits the event only after the propagation round.
+
+### Design gaps to settle
+
+1. **Event display identity.** Decide whether raw-value compatibility events
+   use the display ID as both input and source, or whether the effect request
+   should carry the original source cell ID. The latter retains more useful
+   provenance.
+2. **Display retention.** Confirm that event-content merge plus strongest-event
+   projection completely replaces `behavior/retained-value`, including
+   retraction and block-edit epochs.
+3. **Retry lifecycle.** Prove that selective unresolved-application retry
+   repairs late operators without replaying already delivered effects.
+4. **Trace subscription lifecycle.** Prove replacement, removal, and block-edit
+   behavior for the stable target-based subscription identity.
+5. **Dynamic topology repair.** Applications remain connected to the binding
+   address resolved when declared. Later same-name definitions do not repair
+   old topology; any future repair must be an explicit declarative effect.
+6. **Application topology truth.** Retained application may choose an output
+   only after the operator arrives. Its eventual input/output write set must be
+   represented explicitly before graph reachability can support garbage
+   collection.
+7. **Performance acceptance.** The chained-GUR depths 1, 5, 10, and 50 still
+   need fresh measurements after correctness is green.
+
+### Next session, in order
+
+1. Replace only `display-behavior-update` with a small event-normalization
+   function and remove the behavior dependency from runtime display effects.
+2. Add focused tests for active event update, retraction, repeated raw-value
+   compatibility, and block-edit epoch replacement.
+3. Run runtime-server and semantic-REPL gates before changing trace or retry
+   code further.
+4. Revert or keep each trace/retry experiment based on those named tests.
+5. Run the full compiler gates, full manifest, and only then the chained-GUR
+   benchmark.
+
+## Supported boundary
+
+Compiler-2 currently supports:
+
+- core closures, including capture, escape, recursion, explicit outputs, and
+  multiple outputs;
+- ordinary values and events;
+- distributed TMS premise, retraction, and closure paths;
+- lists, compound slots, and lazy recursive GUR topology;
+- local CPS compiler composition through delayed work.
+
+Compiler-2 behavior-history integration is deferred. The separate behavior
+compiler, behavior values, history algebra, and their isolated tests remain
+supported.
 
 ## Architectural invariants
 
-The remaining work must preserve these boundaries:
+- CPS compilation declares topology; runtime owns evaluation.
+- Compiler-created lexical frames use `p:scope-frame` and do not inherit the
+  reducer.
+- `p:sub-env` remains eager compatibility only.
+- Ordinary compiler symbols expose raw or canonical cells, never scope
+  envelopes.
+- Scope provenance remains available through explicit scoped accessors.
+- Selection and dereference are separate declarations:
+  `p:lexical-access-local-first` chooses a binding descriptor and
+  `p:binding-value` connects its addressed cell to a raw value cell.
+- `->`, `<->`, list, slot, event, and TMS operators are propagator strategies,
+  not compiler special forms.
+- Delayed closure and lazy topology retain the selected local compiler.
+- Runtime topology realization is additive and does not patch the scheduler.
 
-- the CPS compiler declares topology; it does not install host values directly;
-- the environment is a live compound object, not a materialized host map;
-- lexical lookup uses `p:lexical-access` and returns scope-dependent values;
-- scope provenance is interpreted by layered procedures, not erased by general
-  unwrapping inside propagators;
-- applications of closures use the declarative closure-application path;
-- `->` and `<->` are primitive propagators, not compiler special forms;
-- runtime commit/effect declarations remain separate from propagation and host
-  IO;
-- debugging and profiling extend the runtime without patching the scheduler.
+## Implemented repair
 
-## Implemented progress
+### Fixed frames and topology lookup
 
-### CPS compiler organization
+`p:scope-frame` declares parent, scope, chain, depth, and local-name topology.
+`p:lexical-access` is again the structural scoped frame walker;
+`p:reducer-lexical-access` is the explicit reducer API.
 
-- `propagators.compiler-2.cps-core` is the canonical stack-safe compiler.
-- predicates, handlers, declarations, language values, runtime application, and
-  operator families have responsibility-specific namespaces.
-- the synchronous compiler and old cores remain compatibility shims under
-  deprecated namespaces.
-- public compiler entrypoints and multimethod identities remain available.
+Compiler symbol traversal now distinguishes four cases:
 
-### Live lexical environment
+1. a current unambiguous fixed address returns its canonical cell directly;
+2. a known-missing name in a compiler frame reserves one canonical free-input
+   cell;
+3. ambiguous or unknown topology composes local-first binding selection with
+   raw binding dereference;
+4. explicit scoped access remains separate and preserves source, chain,
+   binding address, and dependencies.
 
-- compiler lexical access is installed as topology against the compound
-  environment;
-- declarations record canonical binding addresses without replacing the
-  reducer-backed lexical authority;
-- a unique known address takes the direct read path while ambiguous or unknown
-  bindings retain reducer selection;
-- both paths return the same scope-dependent result shape and preserve lexical
-  provenance;
-- slot access can reuse an already-present cell instead of constructing another
-  accessor network.
+The final symbol of a form therefore appears directly in `:cell` and
+`compiler/result` when it has a canonical address. No accessor is materialized
+and no ordinary propagator unwraps a scope value.
 
-### Application and delayed compilation
+### Reservation lifecycle
 
-- local CPS compilers are carried through delayed closure, lazy topology, list,
-  retained application, and sub-environment compilation paths;
-- known non-contextual operators can install concrete topology through their
-  static installer;
-- retained applications preserve operator and argument cells until the runtime
-  operator becomes available;
-- application and lexical propagators involved in the current hot paths have
-  semantic names for profiling.
+- `let-cell` reserves each fixed address.
+- A same-compilation `def` consumes an unconsumed same-frame reservation.
+- Named closures reserve their name before constructing the closure value, so
+  self-reference sees the live environment.
+- Free inputs are reservations and remain writable by later runtime messages.
+- Reservations carry the compilation seed. A later compile does not consume an
+  older reservation and therefore creates a fresh current address unless
+  `:reuse-existing-bindings?` is true.
+- Frame topology records both historical addresses and the current address.
+  Earlier applications remain wired to their original cells; applications
+  declared after a new definition use the new current address.
 
-### Runtime boundary and diagnostics
+### Closure and application declaration
 
-- commit, propagation, and effect periods are documented separately in
-  `boundary-effect-runtime.md`;
-- topology effects can declare delayed internal network extensions;
-- an additive activation profiler reports call count and inclusive/exclusive
-  time without changing kernel evaluation;
-- sub-environment execution now returns child topology changes instead of
-  discarding them.
+- Closure values contain the live lexical environment ID.
+- Retained applications no longer capture lexical value-address maps or unwrap
+  operators.
+- Lazy guards listen to their compiled raw/canonical condition cell.
+- Closure frames receive raw closure cells.
+- Once runtime knows a retained closure, it prepares and emits the closure-body
+  topology directly. The public closure-frame propagator remains for genuinely
+  delayed closure cells.
+- A portable closure value whose captured environment cell is absent from the
+  receiving network falls back to the application context's live environment.
+- Known propagator operators use their static declaration strategy and retain
+  `:primitive` application lowering. Unknown operator cells retain
+  `:closure-cell` lowering until runtime resolution.
+
+## Deferred compiler-2 behavior-history tests
+
+The following integration tests are reader-discarded in
+`propagators.compile-2-test`:
+
+- `compiler-2-main-can-build-behavior-with-compiler-closure-reducer`;
+- `compiler-2-behavior-merge-can-use-low-level-operators`;
+- `compiler-2-behavior-prefixed-constructor-builds-behavior`;
+- `compiler-2-behavior-syntax-history-slices-return-behaviors`.
+
+Previously deferred behavior-history arithmetic, projection, behavior-cell,
+and execute-sub-environment integration tests remain deferred as well. Re-enable
+them only after core closure/event/TMS correctness and bounded topology growth
+are established independently.
 
 ## Current evidence
 
-The following observations were established with focused runs during this work:
+Green focused receipts:
 
-- lexical direct access remains live after the binding cell receives a later
-  value and retains a lexical dependency token;
-- reducer fallback and direct lexical access return the same scoped value shape;
-- a sub-environment TMS fact can be retracted and brought back through parent
-  storage;
-- two isolated behavior-producing closure applications produce `2` and `7`;
-- isolated behavior arithmetic over those inputs produces `9`;
-- the composed behavior network with sync can instead leave `7` at the observed
-  output and can take minutes to settle;
-- the earlier static-operator wiring checkpoint passed 436 compiler-2
-  assertions, but that receipt predates the current lexical/runtime changes.
+- closure-frame, composition, CPS, organization, and GUR linked-list gate:
+  118 assertions, zero failures/errors;
+- separate behavior compiler and TMS data-structure suites: 82 assertions,
+  zero failures/errors;
+- focused core slices cover false values, reservation reuse, named recursion,
+  later same-scope declarations, lists, canonical final symbols, topology
+  lookup plus raw dereference, explicit provenance, constraints, and late
+  closure/operator/input arrival.
 
-No current full-suite green receipt exists. A fresh focused event/TMS run was
-started and deliberately stopped so the architecture could be discussed before
-more long-running evaluation.
+The full compiler gate is still being re-established. Do not treat the focused
+receipts as the release gate.
 
-### 2026-07-13 event/TMS checkpoint
+### Correctness-phase performance observation
 
-Behavior-history arithmetic integration is now reader-discarded in
-`propagators.compile-2-test` and remains explicitly deferred. Its data
-structures and isolated operator tests are not removed.
+The five-element recursive list-map diagnostic is semantically correct but
+expensive:
 
-The supported event gate is green:
+| Map depth | Settled result | Cells | Propagation time |
+| ---: | ---: | ---: | ---: |
+| 1 | 10 | 993 | about 35 s |
+| 2 | 20 | 1,667 | about 52 s |
+| 3 | 40 | 2,341 | about 73 s |
 
-- seven event arithmetic, update, retraction, switch, DAG, and sync-chain tests;
-- 15 assertions, no failures or errors;
-- 3.49 seconds for the focused gate;
-- the 50-stage update chain alone completes in about 1.43 seconds.
+The observed growth from depths 1 through 3 is approximately linear in cells
+and wall time, not exponential, but its constant cost is unacceptable. Per the
+correctness-first plan, no optimization is applied until all supported semantic
+gates pass.
 
-The first seven non-behavior TMS checks are also green with 27 assertions:
+## Remaining priorities
 
-- default distributed premise operators;
-- the behavior/TMS public compiler entrypoint;
-- retained TMS operator declaration;
-- distributed switch/forward sync;
-- sub-environment TMS storage;
-- premise epoch belief/retraction;
-- compound-pair TMS insertion.
+### P0: finish the supported correctness gates
 
-Their individual runtimes range from 0.03 to 23.1 seconds. The slower passing
-tests are distributed switch at 23.1 seconds and sub-environment TMS at 17.8
-seconds.
+Run in order:
 
-A final combined receipt for the seven event tests, three TMS smoke tests, and
-the direct/fallback lexical shape checks is green: 12 tests, 32 assertions, no
-failures or errors, in 14.26 seconds.
+```bash
+clojure -M:test \
+  propagators.compiler-2-closure-frame-test \
+  propagators.compiler-2-composition-test \
+  propagators.compiler-2-cps-test \
+  propagators.compiler-2-organization-test \
+  propagators.compiler-2-gur-linked-list-test
 
-Two stale expectations were corrected rather than changing runtime semantics:
+clojure -M:test \
+  propagators.compile-2-test \
+  propagators.behavior-compiler-test \
+  propagators.tms-test
 
-- compiler results are lexical scope values, so tests inspect their canonical
-  binding address when they need reducer content or slots;
-- an environment-bound TMS operator is a retained application, not a
-  compile-time static operator, matching the rule that the compiler declares
-  application topology and runtime resolves the operator cell.
+clojure -M:test \
+  graph.vijual.compiler-2-semantic-repl-test \
+  graph.vijual.compiler-2-runtime-server-test
 
-The accepted fixed-parent traversal makes the dynamic premise-closure test
-complete and exposes the application declaration tradeoff directly:
-
-```text
-compiler-2-redefined-premise-closure-keeps-declared-application-topology
-12.9 seconds, passing
-
-result: 6 -> nothing -> 6 -> 6
+clojure -M:test
 ```
 
-The first `op` declaration owns the application topology. The later declaration
-can add premise evidence, but does not rebuild the already-declared graph. This
-is now an explicit compiler contract: fixed lexical addressing trades dynamic
-partial repair of existing application topology for bounded declaration and
-local reasoning. A future repair feature must be an explicit topology
-redeclaration/effect, not an accidental consequence of reducer lookup.
+Any supported semantic failure is P0. A long-running test is not counted as a
+pass until it completes.
 
-### Lexical performance evidence
+### P1: benchmark only after P0 is green
 
-Imported legacy environments and compiler-created frames record their canonical
-binding addresses. Compiler frames use local-first fixed parent traversal and
-do not eagerly copy the complete accumulated reducer. Reads still produce scope
-values with the declaring source, active child chain, binding address, and
-dependencies; no value is unwrapped inside arithmetic propagators.
+Run the chained-GUR benchmark at depths 1, 5, 10, and 50. Record preparation,
+retraction, bring-in, cell count, propagator count, and post-update growth.
+Report whether growth is bounded, linear, polynomial, or explosive. Do not add
+a new threshold in this repair.
 
-Delayed topology carries those addresses as declarative runtime name-binding
-effects. Retained application and lazy guards consult the canonical address, so
-they do not wake on a scope envelope whose base value is still `nothing`.
-Compatibility `p:sub-env` remains the eager composition of `p:scope-frame` and
-`p:inherit-bindings`; only compiler-created fixed frames take the new path.
+### P2: reduce fixed-frame declaration cost
 
-The focused closure/composition/CPS/organization/list gate is green: 118
-assertions, no failures or errors. A 40-frame declaration comparison measured
-about 1.14 seconds and 603 propagators for fixed scope frames versus 8.02
-seconds and 723 propagators with eager reducer inheritance, about a sevenfold
-wall-clock improvement in that diagnostic. The recursive closure depth-one
-case completes in about 438 ms after using the canonical condition address;
-before that guard fix it exceeded 15 seconds and kept declaring frames.
+After correctness, profile the recursive list-map and 100-hop sync cases with
+the existing additive activation profiler. Optimize only a named declaration
+or activation hot path. Do not restore reducer inheritance, materialize
+accessors, or patch the scheduler to hide the cost.
 
-A ten-second additive activation profile of the remaining P1 path reports:
+### P3: behavior-history integration
 
-| Propagator | Calls | Exclusive time |
-| --- | ---: | ---: |
-| `[:compiler-2/lexical-projection :grouped]` | 2,784 | 7.57 s |
-| `[:compound-object/network-slot :env/bindings]` | 40 | 1.95 s |
-| `:compiler-2/lexical-merge` | 17 | 0.06 s |
-
-The fixed-frame change removes that eager lexical copying from the compiler
-path, but does not eliminate all distributed-TMS costs. The ordinary
-distributed closure-output test passes in about 42.9 seconds and the distributed
-premise chain passes in about 81.9 seconds. A full `propagators.compile-2-test`
-run was stopped after more than seven minutes without a failure report.
-
-The representative chained-GUR benchmark has zero cell/propagator growth after
-retract/bring-in at depths 1, 5, and 10. One-sample update times were:
-
-| Depth | Retract | Bring in | Cells | Propagators |
-| ---: | ---: | ---: | ---: | ---: |
-| 1 | 16.6 ms | 44.3 ms | 183 | 86 |
-| 5 | 24.1 ms | 66.9 ms | 259 | 130 |
-| 10 | 39.8 ms | 112.0 ms | 354 | 185 |
-
-Depth 50 did not finish preparation within two minutes. Therefore the limited
-scope is proven useful, but widening fixed addressing into ambiguous/dynamic
-scopes is deferred until the remaining distributed-TMS construction hot path is
-identified.
-
-The CPS compatibility test compares semantic results with the deprecated
-synchronous compiler. Internal result IDs, propagator counts, and application
-counts are intentionally not parity contracts because the live lexical compiler
-declares additional topology.
-
-The fast structural checkpoint is green with 149 assertions across compound
-slot access, reducer cells, additive profiling, compiler organization, and CPS
-tests. This does not include the deferred behavior integration or the pending
-event/TMS acceptance gate.
-
-## Remaining problems
-
-### P0: Establish a truthful supported arithmetic gate
-
-**Problem:** behavior-history arithmetic currently obscures whether ordinary
-event and TMS arithmetic are correct. The composed behavior path is both wrong
-and expensive, while the requested near-term product boundary only requires
-event-current and TMS arithmetic.
-
-**Action:**
-
-1. mark compiler-2 behavior-history arithmetic integration as deferred;
-2. keep behavior construction/history data structures independently testable;
-3. run the focused event arithmetic and retraction tests;
-4. run ordinary TMS arithmetic, premise retraction/bring-in, and closure-output
-   tests;
-5. publish the exact passing and failing test names.
-
-**Significance:** critical. Without this gate, every later result mixes the
-supported path with a known deferred subsystem.
-
-**Dependencies:** none. This is the first task.
-
-### P1: Keep application topology repair explicit
-
-**Decision:** a compiled application keeps the first lexical binding address it
-resolved. Later same-name declarations do not implicitly rebuild that topology.
-
-**Action:** preserve the passing fixed-topology test. If dynamic repair becomes
-required, introduce a declarative topology-replacement effect with an explicit
-identity and lifecycle. Do not restore eager reducer inheritance or add a
-compiler special handler to obtain repair accidentally.
-
-**Significance:** accepted limitation for the current compiler; high only if
-dynamic same-name redefinition becomes a supported surface guarantee.
-
-**Dependencies:** a future repair design depends on P4's explicit topology
-realization contract.
-
-### P2: Identify the first incorrect writer in composed sync
-
-**Problem:** the composed behavior example can observe `7` where isolated
-behavior arithmetic produces `9`. The currently proven fact is the bad write,
-not its source.
-
-**Action:** use the additive profiler/trace extension to record, for the target
-cell, the first message containing `7`, its propagator name, application ID,
-operator, argument IDs, and scope provenance. Then fix that producer or its
-declaration.
-
-**Significance:** high for correctness, but deferred from the immediate
-event/TMS gate because the reproducer is behavior-history arithmetic.
-
-**Dependencies:** P0. Investigation resumes only after event/TMS status is
-known.
-
-### P3: Stop scoped sync/application activation explosion
-
-**Problem:** a small composed behavior program has shown roughly 176,000
-activations in each direction of a bi-sync edge and about 6,500 grouped lexical
-projections. The lexical projection alone consumed about 30 seconds in one
-profile.
-
-The likely mechanism is repeated semantically equivalent scope-bearing
-revisions circulating through sync and reducer projections. That remains a
-hypothesis until P2 identifies the concrete message cycle.
-
-**Action:** after correctness is restored, compare candidate identity using
-canonical binding address, scope chain, base value, and dependency revision.
-Suppress only revisions proven semantically identical. Preserve new
-dependencies and premise epochs.
-
-**Significance:** high. The current cost prevents reliable integration and full
-suite runs.
-
-**Dependencies:** P2. Optimizing before identifying the bad cycle risks hiding
-the correctness defect.
-
-### P4: Clarify retained application topology realization
-
-**Problem:** known operators select concrete inputs/outputs and install an
-ordinary propagator. Dynamic retained applications initially declare only a
-fallback output, then may return messages addressed to an explicit applicant
-after the operator becomes known.
-
-This is not automatically a kernel correctness error: the scheduler routes a
-message by its target ID and schedules that target's neighbors. It does mean the
-declared graph can understate the cells written by the runtime application,
-which matters for graph inspection, dependency analysis, and future garbage
-collection.
-
-**Action:** decide between two explicit strategies:
-
-- keep retained application as an evaluator and record its dynamic write set;
-  or
-- let retained application resolve the operator once and declaratively install
-  the operator's concrete topology, after which the concrete propagator owns
-  evaluation.
-
-Prefer the second strategy if it removes repeated interpretation without
-duplicating closure-frame declaration.
-
-**Significance:** medium for current semantics, high for truthful topology and
-future garbage collection.
-
-**Dependencies:** P1 and P2 provide evidence about whether this boundary causes
-either current correctness defect.
-
-### P5: Finish commit/effect runtime integration
-
-**Problem:** the declarative commit/effect model and several runtime pieces
-exist, but all external integrations do not yet uniformly execute as:
-
-```text
-commit -> propagate to equilibrium -> effect -> next-round commit
-```
-
-**Action:** finish one runtime driver and migrate trace/TUI/XR delivery to it
-without adding IO callbacks to propagators or queues to the immutable network
-value.
-
-**Significance:** medium now, high before garbage collection or more external
-ports. A quiescent round provides the safe observation boundary those features
-need.
-
-**Dependencies:** P0 for a stable acceptance gate; P4 before relying on graph
-reachability for collection.
-
-### P6: Restore full-suite and benchmark receipts
-
-**Problem:** broad compiler, semantic REPL, runtime-server, and full-manifest
-results have not been re-established after the live lexical changes. Older
-failure counts must not be treated as a current baseline.
-
-**Action:** after P0-P3:
-
-1. run the focused compiler-2 suites;
-2. run semantic REPL and runtime-server gates;
-3. run the full manifest;
-4. benchmark the representative event/TMS programs;
-5. report runtime, activation counts, node/edge growth, and any explosion.
-
-**Significance:** release gate.
-
-**Dependencies:** P0-P3.
-
-## Dependency order
-
-| Order | Work | Depends on | Completion evidence |
-| --- | --- | --- | --- |
-| 1 | P0 event/TMS acceptance boundary | nothing | named focused tests with exact counts |
-| 2 | P1 premise-closure correctness | P0 | redefine, retract, and bring-in assertions pass |
-| 3 | P2 first incorrect writer | P0 | trace identifies one named producer |
-| 4 | P3 activation explosion | P2 | equal results with bounded activation/node growth |
-| 5 | P4 retained application realization | P1, P2 | graph and runtime write contract agree |
-| 6 | P5 commit/effect integration | P0, P4 for GC | runtime reaches idle across all phases |
-| 7 | P6 full verification | P0-P3 | focused, runtime, full-suite, and benchmark receipts |
-
-## Lexical-model decision: accepted limited scope
-
-The approved additive redesign splits the old eager operation into two
-declarations:
-
-1. `p:scope-frame` declares parent, scope, chain, depth, and local binding
-   structure;
-2. `p:inherit-bindings` retains the accumulated reducer copy as an explicit
-   compatibility operation;
-3. compatibility `p:sub-env` remains their eager composition;
-4. compiler-declared fixed frames use `p:scope-frame` and canonical parent
-   addresses;
-5. unknown live frames use structural local-first access; legacy materialized
-   frames retain their compatible lookup path.
-
-This keeps lexical results scope-dependent and does not change the scheduler or
-runtime value model. It deliberately gives up implicit partial repair for an
-already-declared application. The evidence above is sufficient to retain this
-limited compiler-frame path, but not sufficient to apply fixed addressing to
-all ambiguous or runtime-created scopes.
-
-## Deferred behavior-history arithmetic
-
-Behavior-history arithmetic is not deleted. Its data structures, operators,
-and isolated tests remain useful. Compiler-2 integration is deferred until the
-event/TMS gate is green and the first-writer trace explains the composed sync
-failure.
-
-Re-enable it only when all of the following are true:
-
-- same-timestamp point arithmetic produces the correct history;
-- interval overlap remains correct;
-- late shared timestamps react without rebuilding unbounded topology;
-- closure and sub-environment applications preserve the result;
-- sync does not circulate semantically identical scoped revisions;
-- the representative benchmark shows no activation or node/edge explosion.
+Resume only after P0 and P1. The first acceptance case is same-timestamp point
+arithmetic through one compiler closure and one sync edge, with correct history
+and bounded activation/topology growth.

@@ -93,7 +93,8 @@
    (prop/concrete-propagator
     (fn [_inputs _outputs network]
       (let [expr (net/network-cell-strongest network expr-id)
-            compiled (compile-expr expr env-id
+            compiler-env (net/network-cell-strongest network env-id)
+            compiled (compile-expr expr compiler-env
                                    {:net network
                                     :seed [:compile-2 expr-id env-id]})]
         [(message out-id (:net compiled))])))

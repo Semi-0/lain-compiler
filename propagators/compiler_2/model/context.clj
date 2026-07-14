@@ -5,19 +5,24 @@
 
 (def scope-slot :context/scope)
 (def chain-slot :context/chain)
+(def env-slot :context/env)
 (def application-slot :context/application)
 (def operator-slot :context/operator)
 
 (defn context-value
   [lexical-env application operator]
   (obj/compound-object
-   {scope-slot (env/scope-id lexical-env)
+   {env-slot lexical-env
+    scope-slot (env/scope-id lexical-env)
     chain-slot (env/scope-chain lexical-env)
     application-slot application
     operator-slot operator}))
 
 (defn scope [context]
   (obj/slot-value context scope-slot))
+
+(defn lexical-env [context]
+  (obj/slot-value context env-slot))
 
 (defn chain [context]
   (obj/slot-value context chain-slot))
@@ -35,5 +40,4 @@
    :context/chain (chain context)
    :context/application (application context)
    :context/operator (operator context)})
-
 
