@@ -8,6 +8,7 @@
             [propagators.compiler-2.compiler.dispatch :as compiler-dispatch]
             [propagators.compiler-2.model.env :as env]
             [propagators.compiler-2.model.operator-value :as operator-value]
+            [propagators.compiler-2.operators.call-graph :as call-graph]
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.compound-object.network-slot :as network-slot]
             [propagators.datastructures.dependency :as dependency]
@@ -782,6 +783,8 @@
        (env/bind-at 'cons (cons-operator) 0)
        (env/bind-at 'car (accessor-operator :car obj/p:car "car") 0)
        (env/bind-at 'cdr (accessor-operator :cdr obj/p:cdr "cdr") 0)
+       (env/bind-at 'call-graph (call-graph/call-graph-operator) 0)
+       (env/bind-at 'p:call-graph (call-graph/call-graph-operator) 0)
        (env/bind-at 'execute-sub-env (execute-sub-env-operator) 0)
        (env/bind-at '-> (sync-operator) 0)
        (env/bind-at '<-> (bi-sync-operator) 0))))

@@ -10,6 +10,7 @@
 (def application-output-slot :application/output)
 (def application-context-slot :application/context)
 (def application-lowering-slot :application/lowering)
+(def application-caller-slot :application/caller)
 
 (def application-slots
   #{application-operator-ast-slot
@@ -18,18 +19,21 @@
     application-arg-cells-slot
     application-output-slot
     application-context-slot
-    application-lowering-slot})
+    application-lowering-slot
+    application-caller-slot})
 
 (defn application-object
-  [{:keys [operator-ast operator-cell args-id arg-ids output-id context-id lowering]}]
+  [{:keys [operator-ast operator-cell args-id arg-ids output-id context-id
+           lowering caller-id]}]
   (obj/compound-object
-   {application-operator-ast-slot operator-ast
-    application-operator-cell-slot (or operator-cell value/nothing)
-    application-args-slot args-id
-    application-arg-cells-slot (vec arg-ids)
-    application-output-slot output-id
-    application-context-slot context-id
-    application-lowering-slot lowering}))
+   (cond-> {application-operator-ast-slot operator-ast
+            application-operator-cell-slot (or operator-cell value/nothing)
+            application-args-slot args-id
+            application-arg-cells-slot (vec arg-ids)
+            application-output-slot output-id
+            application-context-slot context-id
+            application-lowering-slot lowering}
+     caller-id (assoc application-caller-slot caller-id))))
 
 (defn application-info?
   [x]
@@ -42,5 +46,4 @@
        (some? (obj/slot-value x application-context-slot))
        (contains? #{:primitive :closure-cell}
                   (obj/slot-value x application-lowering-slot))))
-
 

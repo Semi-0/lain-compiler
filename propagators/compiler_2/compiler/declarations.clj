@@ -9,6 +9,7 @@
             [propagators.compiler-2.compiler.basis :as h]
             [propagators.compiler-2.runtime.lexical-application :as lexical-application]
             [propagators.compiler-2.model.operator-value :as operator-value]
+            [propagators.compiler-2.operators.call-graph :as call-graph]
             [propagators.compiler-2.runtime.retained-application :as retained-application]
             [propagators.compiler-common.cps :as cps]
             [propagators.compiler-common.core :as common]
@@ -16,17 +17,31 @@
             [propagators.ids :as ids]
             [propagators.stdlib.prop :as stdlib-prop]))
 
+(defn- install-call-publisher
+  [state app-id operator-id]
+  (if-let [caller-id (:application/caller state)]
+    (let [[prop-id network]
+          ((call-graph/p:application-call caller-id app-id operator-id)
+           (:net state))]
+      (-> state
+          (assoc :net network)
+          (h/add-props [prop-id])))
+    state))
+
+(defn- record-application
+  [state app-id operator-ast operator-id result-id context-id]
+  (-> (common/record-application-ir state app-id operator-ast operator-id
+                                    result-id context-id)
+      (install-call-publisher app-id operator-id)))
+
 (defn- install-application-propagator
   [state compile* app-id operator-ast operator-id result-id context-id]
-  (common/install-application-propagator state
-                                         (or (:application-installer state)
-                                             (partial retained-application/p:apply-application-with
-                                                      compile*))
-                                         app-id
-                                         operator-ast
-                                         operator-id
-                                         result-id
-                                         context-id))
+  (-> (common/install-application-propagator
+       state
+       (or (:application-installer state)
+           (partial retained-application/p:apply-application-with compile*))
+       app-id operator-ast operator-id result-id context-id)
+      (install-call-publisher app-id operator-id)))
 
 (defn- install-known-operator
   [state install app-id operator-ast operator-id arg-ids result-id context-id]
@@ -35,12 +50,8 @@
         state' (-> state
                    (assoc :net network)
                    (h/add-props prop-ids))]
-    [(common/record-application-ir state'
-                                   app-id
-                                   operator-ast
-                                   operator-id
-                                   installed-out-id
-                                   context-id)
+    [(record-application state' app-id operator-ast operator-id
+                         installed-out-id context-id)
      (env/cell-binding installed-out-id)]))
 
 (defn declare-direct-operator-application

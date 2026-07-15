@@ -66,6 +66,7 @@
                     :application-installer (:application-installer opts)
                     :application/cell-declarer
                     (:application/cell-declarer opts)
+                    :application/caller (:application/caller opts)
                     :reuse-existing-bindings?
                     (:reuse-existing-bindings? opts)}
                    expr)]

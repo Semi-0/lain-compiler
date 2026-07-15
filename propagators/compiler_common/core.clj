@@ -101,7 +101,8 @@
           :arg-ids (:application/arg-ids state)
           :output-id result-id
           :context-id context-id
-          :lowering (:application/lowering state)})]
+          :lowering (:application/lowering state)
+          :caller-id (:application/caller state)})]
     (-> state
         (assoc :net (h/seed-cell (:net state) app-id application-object))
         (update :applications conj app-id))))

@@ -27,6 +27,7 @@
 (def application-output-slot application-value/application-output-slot)
 (def application-context-slot application-value/application-context-slot)
 (def application-lowering-slot application-value/application-lowering-slot)
+(def application-caller-slot application-value/application-caller-slot)
 
 (def g:compile core/g:compile)
 (def g:apply core/g:apply)

@@ -8,6 +8,7 @@ Source files:
 - `propagators/compiler_2/compiler/handlers.clj`
 - `propagators/compiler_2/compiler/predicates.clj`
 - `propagators/compiler_2/compiler/declarations.clj`
+- `propagators/compiler_2/operators/call_graph.clj`
 - `propagators/compiler_2/runtime/application.clj`
 - `propagators/compiler_2/model/closure_value.clj`
 - `propagators/compiler_2/model/context.clj`
@@ -18,6 +19,7 @@ Source files:
 - `propagators/datastructures/dependency.clj`
 - `propagators/gur.clj`
 - `test/propagators_compile_2_test.clj`
+- `test/propagators/compiler_2_call_graph_test.clj`
 - `test/propagators/compiler_2_gur_linked_list_test.clj`
 
 ## Status
@@ -59,6 +61,26 @@ The current surface language is intentionally small:
 closure body's result cell. `network` and `def-net` are declared-output network
 forms: applying them requires explicit output cells as the tail of the applicant
 list. The parser still produces AST data; `core.clj` compiles that AST directly.
+
+`call-graph` (also bound as `p:call-graph`) is an ordinary primitive
+propagator. It combines potential call sites stored in a closure body with
+realized calls published by retained application IR:
+
+```clojure
+(let-cell [f out graph]
+  (def-net f [x] [out]
+    (+ x 1))
+  (f 2 out)
+  (call-graph f graph)
+  graph)
+```
+
+The result is a semantic graph value. Potential calls are available as soon as
+the closure value arrives. Each retained application carries an optional
+`:application/caller` cell ID and installs a named call-fact publisher. If a
+late operator cell later receives a closure, that publisher reactively refines
+the same graph. Recursive calls point back to the caller closure ID and appear
+as graph cycles. No tracer, TUI, or scheduler hook is required.
 
 For example:
 
