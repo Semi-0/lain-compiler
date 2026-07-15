@@ -127,6 +127,31 @@
       {:output output
        :body body})))
 
+(defn- implicit-return-route-source
+  [expr return-sym]
+  (when (and (= :apply (ast/type expr))
+             (= '-> (ast/name (ast/operator expr)))
+             (= 2 (count (ast/args expr)))
+             (= return-sym (ast/name (second (ast/args expr)))))
+    (first (ast/args expr))))
+
+(defn closure-semantic-body
+  "Return a closure body without its compiler-generated implicit-return route."
+  [closure-info]
+  (let [body (closure-value/closure-body closure-info)
+        output (closure-value/closure-output closure-info)]
+    (if-not (closure-value/implicit-return-output? output)
+      body
+      (let [return-sym (first output)]
+        (if (= :sequence (ast/type body))
+          (let [forms (vec (ast/body body))]
+            (if-let [source (implicit-return-route-source (peek forms)
+                                                          return-sym)]
+              (apply ast/sequence* (conj (pop forms) source))
+              body))
+          (or (implicit-return-route-source body return-sym)
+              body))))))
+
 (defn- known-closure-info
   [network id]
   (let [v (h/strongest-or-nothing network id)]

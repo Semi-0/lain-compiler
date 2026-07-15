@@ -1343,7 +1343,7 @@
              net (if (binding-id binding)
                    (nb/ensure-cell net id)
                    (nb/seed-cell (nb/ensure-cell net id) id binding))
-             [new-props net] ((p:declare-local sym env-id id) net)]
+             [new-props net] ((p:declare-fixed-local sym env-id id) net)]
          (assoc declared :net net :props (into props new-props))))
      {:net network :env env-id :props []}
      bindings)))

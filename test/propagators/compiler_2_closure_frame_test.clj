@@ -5,6 +5,7 @@
             [propagators.compile :as compile]
             [propagators.compiler-2.runtime.application :as application]
             [propagators.compiler-2.runtime.closure-frame :as frame]
+            [propagators.compiler-2.runtime.retained-application :as retained]
             [propagators.compiler-2.model.closure-value :as closure-value]
             [propagators.compiler-2.model.env :as env]
             [propagators.compiler-2.compiler.basis :as helpers]
@@ -14,6 +15,7 @@
             [propagators.datastructures.compound-object :as obj]
             [propagators.datastructures.scope-source :as scope-source]
             [propagators.datastructures.tms.distributed :as tms]
+            [propagators.gur.flat :as fvm]
             [propagators.helpers.task-queue :as tq]
             [propagators.ids :as ids]
             [propagators.message :refer [message]]
@@ -90,6 +92,19 @@
 (defn- prop-count [network]
   (count (filter (comp prop/prop? val)
                  (net/net-env network))))
+
+(defn- topology-counts [network]
+  {:cells (count (net/net-env network))
+   :props (prop-count network)})
+
+(defn- named-install-count [network scope]
+  (count (get (net/network-dict-entry network fvm/name-bindings-key)
+              scope)))
+
+(defn- named-prop-count [network prop-name]
+  (count (filter #(and (prop/prop? %)
+                       (= prop-name (prop/prop-name %)))
+                 (vals (net/net-env network)))))
 
 (defn- distributed-current-value [network id]
   (let [v (net/network-cell-strongest network id)]
@@ -253,6 +268,40 @@
     (is (= topology-cells (count (net/net-env after-x))))
     (is (= topology-props (prop-count after-x)))))
 
+(deftest default-retained-application-realizes-one-bounded-closure-frame
+  (let [compiled (main/compile-source "(later a)")
+        declared (run-props (:net compiled) (:props compiled))
+        operator-id (compiled-binding-id compiled 'later)
+        argument-id (compiled-binding-id compiled 'a)
+        out-id (:cell compiled)
+        application-props
+        (vec (net/network-dict-entry
+              declared retained/retained-application-props-key))
+        before-counts (topology-counts declared)
+        before-rerun (run-props declared application-props)
+        closure-compiled (main/compile-source "(:: [x] (+ x 1))")
+        closure-network (run-props (:net closure-compiled)
+                                   (:props closure-compiled))
+        closure (net/network-cell-strongest closure-network
+                                            (:cell closure-compiled))
+        [closure-tasks with-closure]
+        (core/eval-cell operator-id (message operator-id closure) before-rerun)
+        realized (core/run-tasks closure-tasks with-closure)
+        realized-counts (topology-counts realized)
+        [argument-tasks with-argument]
+        (core/eval-cell argument-id (message argument-id 4) realized)
+        settled (core/run-tasks argument-tasks with-argument)
+        rerun (run-props settled application-props)]
+    (is (= before-counts (topology-counts before-rerun)))
+    (is (= value/nothing (net/network-cell-strongest realized out-id)))
+    (is (= 1 (named-install-count realized frame/frame-scope)))
+    (is (= 1 (named-prop-count realized :compiler-2/closure-frame)))
+    (is (= 5 (net/network-cell-strongest settled out-id)))
+    (is (= realized-counts (topology-counts settled)))
+    (is (= (topology-counts settled) (topology-counts rerun)))
+    (is (= 1 (named-install-count rerun frame/frame-scope)))
+    (is (= 1 (named-prop-count rerun :compiler-2/closure-frame)))))
+
 (deftest retained-frame-projects-tms-provenance-to-output
   (let [compiled (main/compile-source
                   "(network [x] [out] (-> (+ x 1) out))"
@@ -293,6 +342,75 @@
     (is (= 6 (distributed-current-value result real-out-id)))
     (is (contains? (distributed-slot-keys result real-out-id)
                    (tms/premise-slot-key :premise/definition 0)))))
+
+(deftest retained-tms-closure-retracts-and-brings-in-without-topology-growth
+  (let [premise :premise/definition
+        compiled (main/compile-source
+                  "(network [x] [out] (-> (+ x 1) out))"
+                  (helpers/default-env)
+                  {:net (tms-protocol-net)})
+        declared (run-props (:net compiled) (:props compiled))
+        closure-id (:cell compiled)
+        closure (net/network-cell-strongest declared closure-id)
+        x-id (ids/new-node-id)
+        private-out-id (ids/new-node-id)
+        real-out-id (ids/new-node-id)
+        env-id (ids/new-node-id)
+        {:keys [input-ids targets]}
+        (application/closure-call-plan closure [x-id private-out-id] real-out-id)
+        frame-env (application/closure-body-env
+                   (closure-value/closure-env closure)
+                   (closure-value/closure-inputs closure)
+                   targets
+                   input-ids)
+        n0 (-> declared
+               (nb/install-cell x-id 5 5)
+               (nb/install-cell private-out-id)
+               (nb/install-cell real-out-id)
+               (nb/install-cell env-id frame-env frame-env))
+        [root-prop n1] ((frame/p:apply-closure closure-id env-id) n0)
+        [project-prop n2]
+        ((compiler-tms/p:distributed-premise-output
+          [:test/retained-tms-lifecycle real-out-id]
+          [:test/retained-tms-lifecycle real-out-id]
+          [x-id]
+          premise
+          0
+          private-out-id
+          real-out-id)
+         n1)
+        believed (run-props n2 [root-prop project-prop])
+        stable-counts (topology-counts believed)
+        [retract-tasks with-retraction]
+        (core/eval-cell
+         real-out-id
+         (message real-out-id
+                  (tms/distributed-premise-update premise 1 false))
+         believed)
+        retracted (core/run-tasks retract-tasks with-retraction)
+        [bring-in-tasks with-bring-in]
+        (core/eval-cell
+         real-out-id
+         (message real-out-id
+                  (tms/distributed-premise-update premise 2 true))
+         retracted)
+        brought-in (core/run-tasks bring-in-tasks with-bring-in)
+        rerun (run-props brought-in [root-prop project-prop])
+        slots (distributed-slot-keys rerun real-out-id)]
+    (is (= 6 (distributed-current-value believed real-out-id)))
+    (is (= value/nothing
+           (distributed-current-value retracted real-out-id)))
+    (is (= 6 (distributed-current-value brought-in real-out-id)))
+    (is (= stable-counts (topology-counts retracted)))
+    (is (= stable-counts (topology-counts brought-in)))
+    (is (= stable-counts (topology-counts rerun)))
+    (is (= #{(tms/premise-slot-key premise 0)
+             (tms/premise-slot-key premise 1)
+             (tms/premise-slot-key premise 2)
+             (tms/latest-premise-slot-key premise)}
+           (set (filter #(or (= :tms/premise (first %))
+                             (= :tms/latest-premise (first %)))
+                        slots))))))
 
 (deftest delayed-tail-grows-only-the-missing-closure-frame-suffix
   (let [compiled (main/compile-source map-chain-source)

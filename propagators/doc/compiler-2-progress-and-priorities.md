@@ -1,6 +1,6 @@
 # Compiler-2 Progress and Priorities
 
-Status snapshot: 2026-07-14, on
+Status snapshot: 2026-07-15, on
 `codex/compiler-2-closure-correctness`.
 
 This document records the supported boundary and the evidence still required.
@@ -8,9 +8,9 @@ It is not a correctness claim until every gate below is green.
 
 ## Nightly handoff
 
-This branch is an experimental checkpoint, not the planned green repair. It
-preserves the fixed-frame lexical work and the runtime investigations so the
-next session can resume from evidence instead of reconstructing the failure.
+This branch now has a green correctness receipt for the supported compiler-2
+boundary. It preserves the fixed-frame lexical work and the runtime
+investigations while keeping behavior-history integration deferred.
 
 ### Progress preserved here
 
@@ -32,32 +32,32 @@ next session can resume from evidence instead of reconstructing the failure.
 - Canonical declarations removed the earlier accessor-network explosion in the
   focused recursive list and 100-hop sync diagnostics.
 
-The fresh pre-commit gates on this working tree are:
+The latest gates on this working tree are:
 
-- focused closure/composition/CPS/organization/list: 121 assertions, zero
-  failures/errors;
-- separate behavior compiler: 45 assertions, zero failures/errors;
-- TMS data structures: 37 assertions, zero failures/errors;
-- `propagators.compile-2-test`: 323 passing assertions, 6 failures, and
-  49 errors across 16 test cases.
+- focused compiler/demo/cell protocol: 532 assertions, zero failures/errors;
+- runtime server: 315 assertions, zero failures/errors;
+- semantic REPL: 35 assertions, zero failures/errors;
+- full manifest: 2,015 assertions, zero failures/errors.
 
-The most common broad-suite error is `expected node-id token {:x nil}`. Several
-tests still use an outer or pre-declaration environment to find definitions
-that now correctly live in a restored inner `let-cell` frame. The focused
-closure-frame test exposed the same stale assumption and became green after it
-resolved helper closures from the returned closure's captured environment.
-That is evidence for a test migration, not evidence that all 49 errors are
-harmless: the canonical-symbol and reservation failures, late applications,
-compound declarations, and distributed TMS cases still require individual
-classification.
+The former broad-suite `expected node-id token {:x nil}` errors were stale test
+lookups. CPS `let-cell` correctly restores its outer environment, so tests that
+inspect or continue compiling inside the lexical block now explicitly use the
+frame containing the compiled result. They no longer treat the restored outer
+environment as a second authority for inner bindings.
+
+Two graph-demo expectations for `prop:<->` and `prop:+` were also stale after
+application declaration moved behind application context topology. They now
+assert `ctx:<->` and `ctx:+`. The remaining demo failure was real: semantic
+projection exposed the compiler-generated implicit-return route. The shared
+declaration layer now exposes the closure's semantic body, while the raw graph
+continues to show the lowered topology.
 
 An earlier session receipt had 479 green assertions across compile-2, behavior,
 and TMS before the final CPS lexical-scope restoration. It is historical only
-and is superseded by the fresh result above. The latest semantic-REPL receipt is
-35 green assertions, but it was not rerun during this pre-commit checkpoint.
+and is superseded by the fresh result above.
 
-This is not a release receipt. Runtime-server and the full manifest have not
-completed green after all exploratory runtime edits below.
+This is a correctness receipt for the supported boundary, not a performance
+receipt. The chained-GUR benchmark remains outstanding.
 
 ### Accepted lexical decision: one environment authority
 
@@ -129,42 +129,51 @@ local-first structural accessor over fixed compound frames. Scope provenance
 remains an explicit accessor API rather than an envelope attached to every
 ordinary compiler symbol.
 
-### Runtime experiments preserved, not yet accepted design
+### Runtime boundary repair
 
-- Trace subscription identity was changed from including the complete request
-  to `[:trace/subscribe target-id]`. This aims to keep one subscription stable
-  across runtime retries, but has not passed the full runtime gate.
-- Expression rebuild now retries only compiled forms with an unresolved
-  application operator. This avoids replaying every ordinary expression after
-  an unrelated declaration, but its late-definition and effect-delivery
-  contract needs broader tests.
+- Trace subscription identity is `[:trace/subscribe target-id]`, keeping one
+  subscription stable across runtime retries. Trace results are active events
+  whose values are semantic trace graphs; no behavior history participates.
+- Runtime integration repairs only applications with an unresolved operator.
+  Repair installs a named identity edge from the
+  now-resolved binding to the existing unresolved operator cell. It preserves
+  application/result IDs and does not leave a second compiled network behind.
 - `block-at` now reads a block only in its two-argument form. Its explicit
   three-argument form writes the supplied source to the target block without a
   reverse copy into the source cell.
 - Topology binding labels were added to semantic graph projection so canonical
   cells remain named without materializing lexical accessor networks.
+- Runtime dynamic bindings such as `%` are fixed compound-frame declarations,
+  so a client-local binding shadows its parent before the derived address index
+  is consulted.
+- Semantic trace requests retain semantic labels. They are no longer rewritten
+  through the compiler environment, so operator nodes such as `block-at` remain
+  traceable without coupling the tracer to compiler binding IDs.
 - Compiler-2 behavior-history integration tests are reader-discarded. Event,
   TMS, ordinary closure, and the separate behavior compiler remain in scope.
 
-### Proven remaining runtime failure
+### Resolved trace/display failure
 
-The unresolved trace/display failure is no longer attributed to lexical
-lookup. Profiling a trace target showed that it first held a valid update and
+The trace/display failure was not lexical lookup. Profiling a trace target
+showed that it first held a valid update and
 then became contradictory when the propagator named
 `[:compound-object/network-slot :base]` activated. That reader belongs to the
 layered behavior projection installed for the display path.
 
-The direct cause is in the runtime effect evaluator: every
-`:tui/write-display` payload is converted by `display-behavior-update` into a
+The direct cause was in the runtime effect evaluator: every
+`:tui/write-display` payload was converted by `display-behavior-update` into a
 `behavior/retained-value` before it is committed to the display cell. Therefore
 an otherwise ordinary event/display boundary enters behavior history, layered
-base projection, and behavior merge semantics. Continuing to patch that path
-would violate the current scope and obscure whether the core compiler repair is
-correct.
+base projection, and behavior merge semantics.
 
-### Proposed smallest display boundary
+The runtime boundary now preserves existing semantic partial information and
+normalizes only raw display payloads into active events. Trace subscriptions
+publish event-backed graphs directly. Headless tests prove that language
+`trace` reacts to graph updates without a TUI.
 
-Keep `be:block` as a declarative event-backed display operator:
+### Implemented display boundary
+
+`be:block` is a declarative event-backed display operator:
 
 ```text
 source event
@@ -194,25 +203,22 @@ effect, and the runtime commits the event only after the propagation round.
 2. **Derived fast-path equivalence.** Prove that direct unique-address lookup
    and `p:lexical-access-local-first` select the same binding. Compilation must
    remain correct with the derived address cache removed.
-3. **Event display identity.** Decide whether raw-value compatibility events
-   use the display ID as both input and source, or whether the effect request
-   should carry the original source cell ID. The latter retains more useful
-   provenance.
-4. **Display retention.** Confirm that event-content merge plus strongest-event
-   projection completely replaces `behavior/retained-value`, including
-   retraction and block-edit epochs.
-5. **Retry lifecycle.** Prove that selective unresolved-application retry
-   repairs late operators without replaying already delivered effects.
-6. **Trace subscription lifecycle.** Prove replacement, removal, and block-edit
-   behavior for the stable target-based subscription identity.
-7. **Dynamic topology repair.** Applications remain connected to the binding
-   address resolved when declared. Later same-name definitions do not repair
-   old topology; any future repair must be an explicit declarative effect.
-8. **Application topology truth.** Retained application may choose an output
+3. **Display provenance.** Raw-value compatibility events currently use the
+   display ID as both input and source. Carry the original source cell only if
+   a concrete provenance consumer requires it.
+4. **Display lifecycle.** Retraction and block-edit epoch coverage remains to
+   be broadened even though raw and semantic partial-information preservation
+   is now covered at the boundary.
+5. **Trace subscription lifecycle.** Replacement, removal, and block-edit
+   behavior still need dedicated tests for the stable target identity.
+6. **Dynamic topology repair.** A previously unresolved operator is connected
+   to the first later definition that resolves it. Already-resolved
+   applications are not retargeted by subsequent same-name definitions.
+7. **Application topology truth.** Retained application may choose an output
    only after the operator arrives. Its eventual input/output write set must be
    represented explicitly before graph reachability can support garbage
    collection.
-9. **Performance acceptance.** The chained-GUR depths 1, 5, 10, and 50 still
+8. **Performance acceptance.** The chained-GUR depths 1, 5, 10, and 50 still
    need fresh measurements after correctness is green.
 
 ### Next session, in order
@@ -222,15 +228,15 @@ effect, and the runtime commits the event only after the propagation round.
 2. Make `compile-symbol` use local-first selection plus `p:binding-value` as the
    correctness baseline. Keep the direct address path disabled until parity is
    proven.
-3. Migrate tests to read final lexical results through `:cell` and inner
-   definitions through captured environments; outer lookup remains valid only
-   for names actually declared in the outer frame.
-4. Run the focused and broad compiler gates and classify any remaining semantic
-   failures before changing runtime behavior.
-5. Replace `display-behavior-update` with event normalization, then run
-   runtime-server and semantic-REPL gates.
-6. Revert or keep each trace/retry experiment based on named tests.
-7. Run the full manifest and only then the chained-GUR benchmark.
+3. Keep tests reading final lexical results through `:cell` and inner
+   definitions through the explicit inner or captured environment; outer
+   lookup remains valid only for names actually declared in the outer frame.
+4. Keep the focused, broad compiler, semantic graph, and full-manifest gates
+   green while changing lexical declarations.
+5. Keep the runtime-server gate green. The post-repair split receipt covers all
+   73 tests: 315 assertions, zero failures/errors; four loopback socket tests
+   were run outside the restricted sandbox.
+6. Run the chained-GUR benchmark at depths 1, 5, 10, and 50.
 
 ## Supported boundary
 
@@ -316,9 +322,10 @@ lexical representation.
   operators.
 - Lazy guards listen to their compiled raw/canonical condition cell.
 - Closure frames receive raw closure cells.
-- Once runtime knows a retained closure, it prepares and emits the closure-body
-  topology directly. The public closure-frame propagator remains for genuinely
-  delayed closure cells.
+- Once runtime knows a retained closure, it declares the addressed frame and
+  installs `runtime.closure-frame/p:apply-closure-with`.
+- The named closure-frame propagator exclusively prepares and emits closure-body
+  topology, including when the closure was already known by retained application.
 - A portable closure value whose captured environment cell is absent from the
   receiving network falls back to the application context's live environment.
 - Known propagator operators use their static declaration strategy and retain
@@ -345,9 +352,16 @@ are established independently.
 Green focused receipts:
 
 - closure-frame, composition, CPS, organization, and GUR linked-list gate:
-  118 assertions, zero failures/errors;
+  137 assertions, zero failures/errors;
 - separate behavior compiler and TMS data-structure suites: 82 assertions,
   zero failures/errors;
+- semantic REPL plus headless trace/display boundary: 44 assertions, zero
+  failures/errors;
+- focused runtime cases for ordinary semantic tracing, `block-at` tracing,
+  late closure definition, late free-cell definition, top-to-bottom block
+  order, and cross-client shared environments: zero failures/errors;
+- complete runtime-server split gate: 73 tests and 315 assertions, zero
+  failures/errors (four loopback socket tests run outside the sandbox);
 - focused core slices cover false values, reservation reuse, named recursion,
   later same-scope declarations, lists, canonical final symbols, topology
   lookup plus raw dereference, explicit provenance, constraints, and late
