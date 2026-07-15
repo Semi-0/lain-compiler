@@ -218,10 +218,10 @@ effect, and the runtime commits the event only after the propagation round.
    only after the operator arrives. Its eventual input/output write set must be
    represented explicitly before graph reachability can support garbage
    collection.
-8. **Performance acceptance.** The chained-GUR depths 1, 5, 10, and 50 are
-   measured below. Topology is fixed across updates and grows linearly with
-   chain depth; recursive list-map activation cost remains the next profiling
-   target.
+8. **Performance acceptance.** The distributed-TMS chain, retained application,
+   and accumulating-GUR HOP benchmarks are measured below. The compiler-2
+   cdr-gated recursive list-map is a separate workload and remains the next
+   profiling target.
 
 ### Next session, in order
 
@@ -387,7 +387,7 @@ and wall time, not exponential, but its constant cost is unacceptable. Per the
 correctness-first plan, no optimization is applied until all supported semantic
 gates pass.
 
-The distributed-TMS chained-GUR benchmark was run with one preparation/update
+The distributed-TMS chain benchmark was run with one preparation/update
 warmup and three measured update samples per depth:
 
 ```bash
@@ -405,6 +405,27 @@ The topology formulas in this run are exactly `cells = 123 + 12*depth` and
 `props = 31 + 2*depth`. Retraction and bring-in remain roughly flat through
 depth 10 and approximately double at depth 50. There is no topology growth on
 updates and no evidence of an exponential explosion in this benchmark.
+
+The established application benchmark (`10` warmups, `30` samples) remains
+bounded through nested closure depth 5. Compatibility versus retained medians
+were `14.730 / 14.929 ms` at depth 1, `26.299 / 28.308 ms` at depth 3, and
+`40.169 / 44.561 ms` at depth 5. Retained topology grows with nesting, but this
+receipt does not show explosive growth.
+
+The separate accumulating-GUR HOP benchmark (`1` warmup, `3` samples) also
+completed with every result check green:
+
+| Workload | Depth | Median ms |
+| --- | ---: | ---: |
+| map | 5 | 193.839 |
+| map | 10 | 305.292 |
+| map | 15 | 375.579 |
+| filter | 5 | 86.794 |
+| filter | 10 | 145.128 |
+
+These receipts must not be substituted for the compiler-2 cdr-gated list-map
+diagnostic described above; that compiler workload previously took tens of
+seconds even at shallow depths.
 
 ## Remaining priorities
 
@@ -435,11 +456,12 @@ clojure -M:test
 Any supported semantic failure is P0. A long-running test is not counted as a
 pass until it completes.
 
-### Completed P1: benchmark after P0
+### Partial P1: benchmark after P0
 
-The chained-GUR receipt above records preparation, retraction, bring-in, cell
-count, propagator count, and post-update growth. Topology growth is linear in
-depth and bounded across updates; no threshold was added.
+The TMS chain, application, and accumulating-GUR receipts are recorded above.
+The compiler-2 cdr-gated list-map still needs a dedicated harness and bounded
+depth progression before running an unsafe depth-50 case; no threshold was
+added.
 
 ### P2: reduce fixed-frame declaration cost
 
