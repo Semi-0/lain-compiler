@@ -71,17 +71,24 @@
   (let [[tasks updated] (core/eval-cell id (message id update) network)]
     (core/run-tasks tasks updated)))
 
+(defn- unique-binding-id
+  [network sym]
+  (let [ids (keep (fn [[id binding-name]]
+                    (when (= sym binding-name) id))
+                  (env/binding-names network))]
+    (assert (= 1 (count ids)) (str "expected one binding for " sym))
+    (first ids)))
+
 (defn prepare [depth]
   (let [compiled (compiler/compile-source-with-behavior-tms
                   (chain-source depth)
                   {:net (protocol-net)})
         network (nb/run-propagators (:net compiled) (:props compiled))
-        id-of #(env/resolve-binding-id network (:env compiled) %)
         prepared {:depth depth
                   :network network
                   :out-id (:cell compiled)
-                  :retract-id (id-of 'retract-epoch)
-                  :bring-id (id-of 'bring-epoch)}]
+                  :retract-id (unique-binding-id network 'retract-epoch)
+                  :bring-id (unique-binding-id network 'bring-epoch)}]
     (assert (= (inc depth) (current-value network (:out-id prepared))))
     prepared))
 
@@ -122,7 +129,8 @@
     {:retract-ns retract-ns :bring-ns bring-ns}))
 
 (defn benchmark-depth [depth warmups samples]
-  (let [prepared (prepare depth)
+  (dotimes [_ warmups] (prepare depth))
+  (let [[prepare-ns prepared] (elapsed #(prepare depth))
         initial-topology (topology-counts (:network prepared))
         checked (transition prepared)
         final-topology (topology-counts (:brought checked))]
@@ -132,6 +140,7 @@
       (merge {:depth depth
               :warmups warmups
               :samples samples
+              :prepare-ms (/ (double prepare-ns) 1000000.0)
               :retract-median-ms (median-ms (map :retract-ns measurements))
               :bring-median-ms (median-ms (map :bring-ns measurements))
               :topology-delta {:cells 0 :props 0}}

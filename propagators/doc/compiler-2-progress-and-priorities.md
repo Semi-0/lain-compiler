@@ -218,8 +218,10 @@ effect, and the runtime commits the event only after the propagation round.
    only after the operator arrives. Its eventual input/output write set must be
    represented explicitly before graph reachability can support garbage
    collection.
-8. **Performance acceptance.** The chained-GUR depths 1, 5, 10, and 50 still
-   need fresh measurements after correctness is green.
+8. **Performance acceptance.** The chained-GUR depths 1, 5, 10, and 50 are
+   measured below. Topology is fixed across updates and grows linearly with
+   chain depth; recursive list-map activation cost remains the next profiling
+   target.
 
 ### Next session, in order
 
@@ -367,8 +369,7 @@ Green focused receipts:
   lookup plus raw dereference, explicit provenance, constraints, and late
   closure/operator/input arrival.
 
-The full compiler gate is still being re-established. Do not treat the focused
-receipts as the release gate.
+The full compiler gate is green: 2,015 assertions with zero failures/errors.
 
 ### Correctness-phase performance observation
 
@@ -386,9 +387,28 @@ and wall time, not exponential, but its constant cost is unacceptable. Per the
 correctness-first plan, no optimization is applied until all supported semantic
 gates pass.
 
+The distributed-TMS chained-GUR benchmark was run with one preparation/update
+warmup and three measured update samples per depth:
+
+```bash
+clojure -M:compiler-2-tms-chain-bench 1,5,10,50 1 3
+```
+
+| Depth | Prepare ms | Retract median ms | Bring-in median ms | Cells | Props | Update topology delta |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 320.565 | 9.799 | 10.052 | 135 | 33 | 0 / 0 |
+| 5 | 238.793 | 10.236 | 11.031 | 183 | 41 | 0 / 0 |
+| 10 | 223.358 | 9.719 | 11.229 | 243 | 51 | 0 / 0 |
+| 50 | 234.870 | 19.981 | 24.165 | 723 | 131 | 0 / 0 |
+
+The topology formulas in this run are exactly `cells = 123 + 12*depth` and
+`props = 31 + 2*depth`. Retraction and bring-in remain roughly flat through
+depth 10 and approximately double at depth 50. There is no topology growth on
+updates and no evidence of an exponential explosion in this benchmark.
+
 ## Remaining priorities
 
-### P0: finish the supported correctness gates
+### Completed P0: supported correctness gates
 
 Run in order:
 
@@ -415,12 +435,11 @@ clojure -M:test
 Any supported semantic failure is P0. A long-running test is not counted as a
 pass until it completes.
 
-### P1: benchmark only after P0 is green
+### Completed P1: benchmark after P0
 
-Run the chained-GUR benchmark at depths 1, 5, 10, and 50. Record preparation,
-retraction, bring-in, cell count, propagator count, and post-update growth.
-Report whether growth is bounded, linear, polynomial, or explosive. Do not add
-a new threshold in this repair.
+The chained-GUR receipt above records preparation, retraction, bring-in, cell
+count, propagator count, and post-update growth. Topology growth is linear in
+depth and bounded across updates; no threshold was added.
 
 ### P2: reduce fixed-frame declaration cost
 
