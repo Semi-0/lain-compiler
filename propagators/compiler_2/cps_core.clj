@@ -67,6 +67,7 @@
                     :application/cell-declarer
                     (:application/cell-declarer opts)
                     :application/caller (:application/caller opts)
+                    :block/premise-context (:block/premise-context opts)
                     :reuse-existing-bindings?
                     (:reuse-existing-bindings? opts)}
                    expr)]

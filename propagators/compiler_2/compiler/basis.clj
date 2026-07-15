@@ -389,7 +389,16 @@
   (let [arg-values (mapv #(net/network-cell-strongest current-net %) arg-ids)
         arg-contents (mapv #(net/network-cell-content current-net %) arg-ids)
         bases (mapv unwrap-compiler-value arg-values)
-        claim-id [:compiler-2/primitive out-id]]
+        support-version
+        (->> arg-contents
+             (filter tms/distributed-value?)
+             (mapcat tms/distributed-supports)
+             (map (fn [support]
+                     [(tms/premise support)
+                      (tms/support-source support)
+                     (tms/support-kind-value support)]))
+             set)
+        claim-id [:compiler-2/primitive out-id support-version]]
     (cond
       (some value/contradiction? bases)
       []
