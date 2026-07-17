@@ -961,8 +961,8 @@ Current implementation:
 Current implementation:
 
 - ordinary non-declaration TUI blocks are expression blocks. The runtime wraps
-  them with a generated output cell and `(block-at % <next-index> out)`, so the
-  result displays in the next block;
+  them with a generated output cell and `(be:block-at % <next-index> out)`, so
+  the result displays in the next block;
 - top-level declarations and IO forms are not auto-wrapped: `def`, `def-cell`,
   `def-cells`, `def-net`, `def-constraint`, `def-behavior`,
   `def-behaviors`, `define-behaviors`, `->`, `<->`, `block`, `block-at`,
@@ -981,7 +981,12 @@ Current implementation:
   returns a proxy cell; values written to that proxy are projected through the
   behavior display lane;
 - `be:block-at` writes through a latest-behavior display lane and is intended
-  for repeated behavior/XR updates.
+  for repeated behavior/XR updates;
+- premise-versioned automatic output attaches a named propagator directly to
+  the target block's display cell. The cell's distributed-TMS strongest value,
+  rather than an outbox epoch, selects what the TUI displays. Retracted versions
+  remain inactive evidence and simultaneous active versions contradict with
+  provenance.
 - `(-> behavior-value (be:block index))` is verified as the expression-style
   behavior block target.
 

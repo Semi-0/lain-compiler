@@ -10,11 +10,18 @@ clojure -M:wired/runtime
 clojure -M:wired/versioned-client --client-id versioned-1
 ```
 
-The client registers with mode `:versioned-premise`. Ctrl+Up and Ctrl+Down
-select a block, Space opens a local draft, Ctrl+T commits, and Esc discards the
-draft. Polling may update displayed runtime values but never overwrites a draft.
+The client registers with mode `:versioned-premise`. Up and Down select a
+block, Enter opens a local draft, Ctrl+T commits, and Esc discards the draft.
+The earlier Ctrl+Up/Ctrl+Down and Space bindings remain compatibility aliases.
+Polling may update displayed runtime values but never overwrites a draft.
 If another client commits the selected block, the draft becomes stale and must
 be discarded/refreshed before it can commit.
+
+Source blocks render only their source and warnings. When an expression returns
+a cell, the existing auto-output topology displays its value in the following
+block, and the runtime retains one additional blank block for the next entry.
+Ctrl+T has no effect outside edit mode; create a block by selecting that blank
+entry with Up/Down, pressing Enter, and then committing its draft.
 
 ## Transaction boundary
 
@@ -51,6 +58,42 @@ special application compiler handler. Scalar block results pass through named
 environment, and compound topology values stay raw.
 Retained closure evaluation therefore continues through the existing
 `p:apply-closure` path.
+
+### Block display cells
+
+Automatic expression output is internal runtime topology, not an outbox
+effect. Each compiled version installs one named `:runtime/tui-block-display`
+propagator from its premise-supported result to the following block's existing
+display cell. All versions targeting that block merge into that one cell. The
+TUI reads the cell's strongest distributed-TMS projection after propagation:
+retracted claims stay stored but inactive, one active claim displays its value,
+and conflicting active claims display the ordinary contradiction with
+provenance. No display epoch chooses a winner. The boundary outbox remains for
+actual external effects and explicit legacy block writes.
+
+### Replayable JSON debugging
+
+The runtime server exposes a localhost line-delimited JSON socket on port
+`45556` by default; pass `--json-port 0` in tests or another port at launch.
+It accepts `instance/export` and `instance/import`. Export contains all
+versioned clients plus the append-only successful commit log in execution
+order. The snapshot is diagnostic only; import registers the clients and
+replays the commit log through the same atomic `commit-version!` path.
+
+```bash
+clojure -M:wired/runtime --json-port 45556
+clojure -M -m graph.compiler-2-runtime-server json-export 45556 instance.json
+clojure -M -m graph.compiler-2-runtime-server json-import 45556 instance.json
+```
+
+An exact replay is mutation-free. A partial or divergent history is rejected,
+and a failed candidate replay publishes none of its topology, premises, or
+history. The fixture
+`test/graph/compiler_2_runtime/fixtures/four_edits.json` reproduces four edits
+of the same application; `graph.compiler-2-runtime.instance-replay-test`
+verifies displayed values `11`, `12`, `13`, and `14`, one active plus three
+inactive display claims, atomic import, multi-client ordering, and socket
+cleanup.
 
 ## Editable definitions
 
@@ -97,14 +140,29 @@ Named verification suites:
 - `explicit-premise-definition-records-and-retracts-its-context` covers the
   explicit-premise branch;
 - `definition-and-caller-premises-retract-and-recommit` covers stable scalar
-  definitions and support-preserving reactivation.
+  definitions and support-preserving reactivation;
+- `four-edit-json-replay-keeps-tms-in-the-block-display-cell` covers replayable
+  TMS-aware automatic output without an outbox epoch.
 
 ## Benchmark receipt
 
-Run `clojure -M:wired/versioned-bench`. The benchmark now commits matching
-definition and application edits and reports retained candidates, placeholder
-cells, and warnings in addition to latency and topology. Timing remains a
-diagnostic; there is no fixed threshold. A 2026-07-15 paired-edit receipt was:
+The simpler scalar-edit diagnostic exercises the direct display-cell path. A
+2026-07-16 run produced:
+
+| edits | total commit ms | cells | propagators | retained versions | display gates |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 61.0 | 182 | 49 | 1 | 1 |
+| 10 | 1038.7 | 713 | 445 | 10 | 10 |
+| 50 | 5393.4 | 3073 | 2205 | 50 | 50 |
+
+From 10 to 50 edits, cells grew 4.31x and propagators 4.96x for 5x retained
+history. Total commit time grew 5.19x. The diagnostic therefore shows linear
+topology and no activation explosion from inactive display claims; it is not a
+fixed timing threshold.
+
+Run `clojure -M:wired/versioned-bench` for the intentionally heavier matching
+definition-and-application diagnostic. It also reports retained candidates,
+placeholder cells, and warnings. A 2026-07-15 paired-edit receipt was:
 
 | edits | commits | commit ms | cells | propagators | candidates | premise gates |
 |---:|---:|---:|---:|---:|---:|---:|
