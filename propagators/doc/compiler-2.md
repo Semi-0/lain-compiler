@@ -457,7 +457,7 @@ application result.
 
 The current runtime prototype is in:
 
-- `graph/compiler_2_runtime.clj`
+- `propagators/compiler_2/runtime.clj`
 - `graph/compiler_2_runtime_server.clj`
 - `graph/compiler_2_tui.clj`
 - `graph/compiler_2_semantic_repl.clj`

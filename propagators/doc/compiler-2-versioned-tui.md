@@ -89,8 +89,8 @@ clojure -M -m graph.compiler-2-runtime-server json-import 45556 instance.json
 An exact replay is mutation-free. A partial or divergent history is rejected,
 and a failed candidate replay publishes none of its topology, premises, or
 history. The fixture
-`test/graph/compiler_2_runtime/fixtures/four_edits.json` reproduces four edits
-of the same application; `graph.compiler-2-runtime.instance-replay-test`
+`test/propagators/compiler_2/runtime/fixtures/four_edits.json` reproduces four edits
+of the same application; `propagators.compiler-2.runtime.session.instance-replay-test`
 verifies displayed values `11`, `12`, `13`, and `14`, one active plus three
 inactive display claims, atomic import, multi-client ordering, and socket
 cleanup.
@@ -131,7 +131,7 @@ version; old topology is not rewired or deleted.
 
 Named verification suites:
 
-- `graph.compiler-2-runtime.block-compiler-test` covers idempotent lowering,
+- `propagators.compiler-2.runtime.tui.block-compiler-test` covers idempotent lowering,
   callable declaration forms, and closure-local definitions;
 - `edited-network-definition-reactivates-existing-application` covers registry
   routing and retained-call repair;
