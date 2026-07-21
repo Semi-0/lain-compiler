@@ -286,10 +286,11 @@
      :diagnostics diagnostics}))
 
 (defn- install-output-gates
-  [state candidate private-outputs caller-outputs]
+  [state candidate caller-contexts private-outputs caller-outputs]
   (reduce
    (fn [state [index private-id public-id]]
-     (let [contexts (:candidate/contexts candidate)
+     (let [contexts (into (set caller-contexts)
+                          (:candidate/contexts candidate))
            [prop-id network]
            ((premise/p:block-premise
              [:definition-output (:candidate/id candidate) index]
@@ -302,7 +303,8 @@
    (map vector (range) private-outputs caller-outputs)))
 
 (defn- candidate-topology
-  [compile* definition-id call-id arg-ids out-id candidate network]
+  [compile* definition-id call-id arg-ids out-id candidate caller-contexts
+   network]
   (let [caller-signature
         (or (get-in (net/network-dict-entry network fvm/name-bindings-key)
                     [call-metadata-scope call-id :caller-signature])
@@ -351,11 +353,11 @@
            (mapv env/cell-binding application-args)
            state
            (first private-outputs))
-          gated (install-output-gates called candidate
+          gated (install-output-gates called candidate caller-contexts
                                       private-outputs caller-outputs)
           gated (if (and (seq private-outputs)
                          (not= out-id (peek caller-outputs)))
-                  (install-output-gates gated candidate
+                  (install-output-gates gated candidate caller-contexts
                                         [(peek private-outputs)] [out-id])
                   gated)
           caller-contexts (->> (into [out-id] arg-ids)
@@ -391,10 +393,12 @@
       {:net network :props (:props gated)})))
 
 (defn- candidate-call-effects
-  [compile* definition-id call-id arg-ids out-id candidate network]
+  [compile* definition-id call-id arg-ids out-id candidate caller-contexts
+   network]
   (let [key [:versioned-definition-call call-id (:candidate/id candidate)]]
     (if-let [topology (candidate-topology compile* definition-id call-id
-                                         arg-ids out-id candidate network)]
+                                         arg-ids out-id candidate
+                                         caller-contexts network)]
       (let [result (topology-effects/declare-once network key out-id
                                                   (constantly topology))
             metadata-key [call-id (:candidate/id candidate)]
@@ -418,7 +422,8 @@
    (fn [result candidate]
      (merge-results result
                     (candidate-call-effects compile* definition-id call-id
-                                            arg-ids out-id candidate network)))
+                                            arg-ids out-id candidate
+                                            caller-contexts network)))
    {:effects [] :messages []}
    (filterv #(candidate-active? network %)
             (registry-candidates network registry-id))))

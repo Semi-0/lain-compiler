@@ -963,13 +963,17 @@ Current implementation:
 - ordinary non-declaration TUI blocks are expression blocks. The runtime wraps
   them with a generated output cell and `(be:block-at % <next-index> out)`, so
   the result displays in the next block;
-- top-level declarations and IO forms are not auto-wrapped: `def`, `def-cell`,
-  `def-cells`, `def-net`, `def-constraint`, `def-behavior`,
-  `def-behaviors`, `define-behaviors`, `->`, `<->`, `block`, `block-at`,
-  `be:block-at`, `trace`, `io:xr`, `io:slider`, `io:slider-panel`,
-  `io:slider-panel-name`, and the older compatibility forms `xr-io`,
-  `slider-io`, and `slider-panel-io`;
-- `(block index)` returns the current TUI instance's block text cell;
+- top-level declarations are not auto-wrapped. Neither are expressions that
+  already declare an explicit destination, including `->`, `<->`, `be:block`,
+  the output-taking arities of `block-at`/`be:block-at`, and IO operators;
+- `->` and `<->` remain ordinary sync operators rather than declaration forms;
+  suppression here is only a TUI presentation policy that avoids inventing a
+  second destination;
+- in a premise-versioned client, `(block index)` is syntax sugar for a named
+  `p:block` topology constructor. It returns a proxy cell and mono-syncs that
+  cell into the addressed block's display cell; `->` itself is unchanged;
+- in a legacy client, `(block index)` retains its block-text compatibility
+  behavior;
 - `(block-at instance index)` returns the addressed instance's block text cell;
 - `(block index)` may bind future blocks; the runtime creates missing blank
   blocks so the target can update immediately;

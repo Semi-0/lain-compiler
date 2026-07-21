@@ -568,6 +568,11 @@
   [network a b]
   (layered/forward-transport-messages sync-update network a b))
 
+(defn mono-sync-messages
+  "Forward one cell with the same layered content policy as `->`."
+  [network from-id to-id]
+  (forward-sync-messages network from-id to-id))
+
 (defn- sync-chain-ids
   [name arg-ids]
   (let [arg-ids (vec arg-ids)]
