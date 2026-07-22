@@ -65,6 +65,27 @@ Use a compound operator when the extension must declare a subnet or retain
 topology. Use `basis/primitive-operator` only for a direct host procedure.
 Neither case requires a parser or compiler-dispatch change.
 
+### Reactive wall clock example
+
+The repository includes a boundary-backed extension whose operator remains
+declarative while the runtime owns wall-clock IO and scheduling:
+
+```clojure
+(load-primitive-environment
+ "extensions/runtime_clock.clj"
+ :extensions.runtime-clock/primitive-bindings
+ 0)
+
+(clock-in 1000)
+```
+
+`clock-in` accepts an interval in milliseconds and an optional explicit output
+cell. Its result is an ordinary source-aware event cell, so the next TUI block
+shows Unix wall-clock milliseconds and updates reactively. The daemon
+subscription is keyed by the declared effect identity, stops when its owning
+block premise retracts, and emits a final event retraction. The loadable module
+never starts a thread or reads the clock itself.
+
 ## 2. Write normal `.lain` source
 
 Imports and their consumers can live in one file because loading is staged one

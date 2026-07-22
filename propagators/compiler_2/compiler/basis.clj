@@ -588,6 +588,11 @@
 (defn sync-operator []
   (operator-value/propagator-operator
    {:name '->
+    :prepare-network
+    (fn [network {:keys [inputs outputs]}]
+      (if (some #(event/protocol-cell? network %) inputs)
+        (reduce event/mark-protocol-cell network outputs)
+        network))
     :output-selector sync-output-id
     :input-selector (fn [arg-ids _fallback-id _context-id]
                       (sync-chain-ids '-> arg-ids))

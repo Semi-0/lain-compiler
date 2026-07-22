@@ -128,6 +128,7 @@
            activate
            plan
            messages
+           prepare-network
            contextual?]}]
   (let [select-output (or output-selector default-output-selector)
         select-input (or input-selector default-input-selector)
@@ -151,6 +152,11 @@
         install (fn [network arg-ids fallback-id]
                   (let [{:keys [inputs outputs out-id] :as call-map}
                         (call arg-ids fallback-id nil)
+                        network (reduce nb/ensure-cell network
+                                        (concat inputs outputs))
+                        network (if prepare-network
+                                  (prepare-network network call-map)
+                                  network)
                         [prop-id network']
                         ((prop/construct-propagator
                           (or name :compiler-2/propagator-operator)
@@ -158,7 +164,7 @@
                             (activate-call current-net call-map))
                           inputs
                           outputs)
-                         (reduce nb/ensure-cell network (concat inputs outputs)))]
+                         network)]
                     [network' [prop-id] out-id]))
         activate (fn [network _context-id arg-ids fallback-id]
                    (activate-call
