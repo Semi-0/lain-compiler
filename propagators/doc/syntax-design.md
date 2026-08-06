@@ -32,9 +32,11 @@ Current convention:
 - `p:` names expose low-level propagator/slot topology directly, for example
   `p:cons`, `p:car`, `p:cdr`, and `p:slot`.
 - `be:` names expose explicit behavior operators. `be` stands for behavior;
-  behavior-history arithmetic is spelled `be:+`, `be:-`, `be:*`, and source
-  spelling `be:/` (internally `be:divide`). Plain `+`, `-`, `*`, and `/` remain
-  current-value arithmetic and lift over event-current values.
+  behavior-history arithmetic is not bound by the primitive behavior
+  environment. The lower-level operators remain available for explicit custom
+  environments; division is named `be:divide` because `be:/` is not EDN.
+  Plain `+`, `-`, `*`, and `/` remain current-value arithmetic and lift over
+  event-current values.
 - `io:` names expose boundary resources. The target direction is that every
   `io:*` form returns an instance/receipt cell for the external resource it
   registers.
@@ -53,9 +55,6 @@ Implemented behavior/TMS surface:
   inputs `[acc next]` and one output;
 - `behavior` / `behavior-cell` and their prefixed aliases `be:behavior` /
   `be:behavior-cell` are the current behavior constructors;
-- `def-behavior`, `def-behaviors`, `define-behaviors`, `let-behavior`, and
-  `let-behaviour` lower to ordinary event-source cells plus latest-retaining
-  behavior pipelines;
 - behavior merge closures reuse the compiler-2 reducer adapter;
 - `behavior`, `latest`, `last`, `history`, `history-take`, `history-drop`, and
   `history-split-at` are compiler-2-backed. `be:latest`, `be:last`, and
@@ -107,9 +106,13 @@ Verified in tests:
 ### Network Closure Application
 
 ```clojure
-((cell [x]
+((cell-expr [x]
    (+ x 1))
  4)
+
+ ((:: [x]
+    (+ x 1))
+  4)
 ```
 
 ```clojure
@@ -137,6 +140,7 @@ Current implementation:
 ```clojure
 (def signal)
 (def answer (+ 1 2))
+(def inc (:: [x] (+ x 1)))
 ```
 
 Current implementation:
@@ -153,16 +157,6 @@ Current implementation:
 (-> (+ 1 2) out)
 ```
 
-```clojure
-(def-cell inc
-  (cell [x]
-    (+ x 1)))
-```
-
-```clojure
-(def-cell inc [x]
-  (+ x 1))
-```
 
 Current implementation:
 
@@ -540,7 +534,8 @@ Current implementation:
 - arithmetic is available in default compiler-2 env;
 - comparison primitives `<`, `<=`, `>`, `>=`, `=`, and boolean `not` are
   available in the default compiler-2 env;
-- behavior arithmetic is explicit through `be:+`, `be:-`, `be:*`, and `be:/`;
+- behavior arithmetic is not installed in the primitive behavior environment;
+  custom environments may bind the lower-level operators explicitly;
 - `->` performs one-way sync and supports adjacent chains;
 - `<->` performs bidirectional sync and supports adjacent chains;
 - both return the last cell in the chain.
@@ -758,21 +753,6 @@ Verified by `definition-and-application-rewriting-is-idempotent`,
 (be:behavior events retain-latest (behavior-empty-state) retained)
 ```
 
-Latest-retaining behavior sugar:
-
-```clojure
-(def-behavior a)
-(def-behaviors a b c)
-(define-behaviors a b c)
-
-(let-behaviour [a b c]
-  (<-> (be:- (be:+ a b) c) out))
-```
-
-Each behavior name declares the visible behavior cell and its sibling event
-source, for example `a` and `a-events`, then promotes `a-events` through
-`be:latest` into `a`.
-
 Current implementation:
 
 - behavior cells can be constructed from compiler-2-defined reducer closures;
@@ -781,10 +761,8 @@ Current implementation:
   reducer-subnet machinery;
 - `be:behavior` and `be:behavior-cell` are implemented aliases for behavior
   construction. `be` stands for behavior;
-- `def-behavior`, `def-behaviors`, `define-behaviors`, `let-behavior`, and
-  `let-behaviour` are parser-level sugar over `def-cells`, `def-net`,
-  `behavior`, `behavior-empty-state`, `behavior-add-event`, and
-  `behavior-retain-last`.
+- behavior declarations use ordinary `def-cells` plus explicit construction;
+  the parser has no `def-behavior` or `let-behavior` family.
 
 Verified in tests:
 
@@ -840,7 +818,6 @@ Verified in tests:
 - `compiler-2-behavior-syntax-latest-and-last-are-behaviors`;
 - `compiler-2-behavior-prefixed-projections-are-behaviors`;
 - `compiler-2-be-latest-zero-arg-builds-empty-latest-behavior`;
-- `compiler-2-behavior-declaration-sugar-retains-latest-events`;
 - `compiler-2-behavior-syntax-history-slices-return-behaviors`.
 
 ### TMS-Composed Behavior
@@ -1157,7 +1134,7 @@ Current implementation:
   otherwise the same cell is both the view cell and event-source cell;
 - widget updates are monotone event facts. Plain cells can feed default
   arithmetic directly as event-current values; behavior history still requires
-  explicit promotion through `be:latest` or `define-behaviors`;
+  explicit promotion through `be:latest`;
 - `io:slider-panels` is accepted as a compatibility alias for
   `io:slider-panel`;
 - applying `io:slider-panel` returns the generated panel descriptor cell;
@@ -1168,8 +1145,10 @@ Current implementation:
 Example:
 
 ```clojure
-(define-behaviors a b c)
-(def out)
+(def-cells a-events a b-events b c-events c out)
+(be:latest a-events a)
+(be:latest b-events b)
+(be:latest c-events c)
 (io:slider-panel a b c)
 (<-> (be:- (be:+ a b) c) out)
 ```
@@ -1186,7 +1165,7 @@ Plain event-current arithmetic does not require behavior promotion:
 ```
 
 ```clojure
-(define-behaviors a b c)
+(def-cells a b c)
 (io:slider-panel-name "mix" a b c)
 ```
 

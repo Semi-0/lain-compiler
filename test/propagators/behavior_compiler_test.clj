@@ -1,5 +1,6 @@
 (ns propagators.behavior-compiler-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.core :as clj]
+            [clojure.test :refer [deftest is testing]]
             [propagators.cells.cell-protocol :as protocol]
             [propagators.cells.value :as value]
             [propagators.compile :as compile]
@@ -46,6 +47,14 @@
   (let [id (ids/new-node-id)]
     [id (nb/install-cell n id v (behavior/strongest-value v))]))
 
+(defn- behavior-arithmetic-env
+  []
+  (-> (h/default-env)
+      (env/bind-at 'be:+ (h/behavior-operator :+ clj/+) 0)
+      (env/bind-at 'be:- (h/behavior-operator :- clj/-) 0)
+      (env/bind-at 'be:* (h/behavior-operator :* clj/*) 0)
+      (env/bind-at 'be:divide (h/behavior-operator :/ clj//) 0)))
+
 (defn- record-map
   [record]
   (cond
@@ -74,12 +83,12 @@
   (reduce
    (fn [acc [sym id]]
      (env/bind acc sym (env/cell-binding id) 0))
-   (h/behavior-env)
+   (behavior-arithmetic-env)
    bindings))
 
 (defn- closure-info-from-source
   ([source]
-   (closure-info-from-source source (h/behavior-env)))
+   (closure-info-from-source source (behavior-arithmetic-env)))
   ([source env]
    (closure-info-from-source source env {}))
   ([source env opts]
@@ -89,7 +98,7 @@
 
 (defn- closure-behavior-from-source
   ([source timestamp]
-   (closure-behavior-from-source source (h/behavior-env) timestamp))
+   (closure-behavior-from-source source (behavior-arithmetic-env) timestamp))
   ([source env timestamp]
    (let [compiled (behavior-compiler/compile-source source
                                                     env
@@ -166,7 +175,7 @@
 (deftest behavior-compiler-closure-declaration-is-latest-behavior
   (testing "a closure declaration emits behavior whose base is closure-info"
     (let [compiled (behavior-compiler/compile-source "(:: [x] (be:+ x 1))"
-                                                     (h/behavior-env)
+                                                     (behavior-arithmetic-env)
                                                      {:timestamp 4})
           closure-content (content (:net compiled) (:cell compiled))
           closure-summary (strongest (:net compiled) (:cell compiled))

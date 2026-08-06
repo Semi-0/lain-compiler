@@ -18,9 +18,7 @@
   (throw (ex-info message data)))
 
 (defn- preprocess-source [source]
-  (-> source
-      (str/replace #"\(\s*::(?=\s)" (str "(" network-marker))
-      (str/replace #"(?<=\(|\s)be:/" "be:divide")))
+  (str/replace source #"\(\s*::(?=\s)" (str "(" network-marker)))
 
 (defn read-form
   "Read exactly one source form."
@@ -136,43 +134,6 @@
       (parse-error "def-cells names must be symbols" {:name name})))
   (apply ast/sequence* (map #(ast/def* % nil) names)))
 
-(defn- suffix-symbol
-  [sym suffix]
-  (symbol (namespace sym) (str (name sym) suffix)))
-
-(defn- behavior-declaration-forms
-  [name]
-  (when-not (symbol? name)
-    (parse-error "behavior name must be a symbol" {:name name}))
-  (let [events-name (suffix-symbol name "-events")]
-    [(list 'def-cells events-name name)
-     (list 'be:latest events-name name)]))
-
-(defn- behavior-wiring-forms
-  [name]
-  (subvec (vec (behavior-declaration-forms name)) 1))
-
-(defn- parse-def-behavior [[name & more]]
-  (when (or (nil? name) (seq more))
-    (parse-error "def-behavior expects one name"
-                 {:name name :extra more}))
-  (apply ast/sequence* (map parse-form (behavior-declaration-forms name))))
-
-(defn- parse-def-behaviors [names]
-  (when-not (seq names)
-    (parse-error "def-behaviors expects at least one name" {:names names}))
-  (apply ast/sequence*
-         (map parse-form
-              (mapcat behavior-declaration-forms names))))
-
-(defn- parse-let-behavior [[names & body]]
-  (let [names (symbol-vector names "let-behavior bindings")
-        cell-names (mapcat (fn [name] [(suffix-symbol name "-events") name])
-                           names)
-        body* (concat (mapcat behavior-wiring-forms names) body)]
-    (ast/let-cell cell-names
-                  (body-form body* "let-behavior"))))
-
 (declare parse-cond-form)
 
 (defn- parse-compound-spec [spec]
@@ -280,22 +241,11 @@
       def (parse-def (rest form))
       def-cell (parse-def-cell (rest form))
       def-cells (parse-def-cells (rest form))
-      def-behavior (parse-def-behavior (rest form))
-      def-behaviour (parse-def-behavior (rest form))
-      def-behaviors (parse-def-behaviors (rest form))
-      def-behaviours (parse-def-behaviors (rest form))
-      define-behaviors (parse-def-behaviors (rest form))
-      define-behaviours (parse-def-behaviors (rest form))
-      let-behavior (parse-let-behavior (rest form))
-      let-behaviour (parse-let-behavior (rest form))
       compound (parse-compound (rest form))
       if (parse-if (rest form))
       when (parse-when (rest form))
       cond (parse-cond-form (rest form))
-      app-> (removed-form form)
       do (removed-form form)
-      let-network (removed-form form)
-      let-compound (removed-form form)
       (parse-application form))
 
     (vector? form)
@@ -313,5 +263,4 @@
   (parse-form (read-form source)))
 
 (def parse parse-string)
-
 

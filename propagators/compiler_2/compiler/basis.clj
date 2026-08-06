@@ -815,11 +815,7 @@
   (operator-env contextual-primitive-operator))
 
 (defn behavior-env []
-  (-> (default-env)
-      (env/bind-at 'be:+ (behavior-operator :+ core/+) 0)
-      (env/bind-at 'be:- (behavior-operator :- core/-) 0)
-      (env/bind-at 'be:* (behavior-operator :* core/*) 0)
-      (env/bind-at 'be:divide (behavior-operator :/ core//) 0)))
+  (default-env))
 
 (defn behavior-tms-env []
   ((requiring-resolve

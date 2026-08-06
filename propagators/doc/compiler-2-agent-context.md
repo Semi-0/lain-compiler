@@ -185,12 +185,14 @@ form `do` is intentionally not supported.
 | `(def-cells a b ...)` | Lower to a sequence of free cell declarations. |
 | `(if condition then else)` | Lower to application of the `if` operator. |
 | `(cond [c1 e1 ... else e])` | Lower recursively to `if`/`switch` applications. |
-| behavior spelling forms | `def-behavior`, `def-behaviour`, plural aliases, `define-behaviors`, and `let-behavior` create event/history wiring. Compiler-2 behavior-history integration remains only partially supported. |
 
-Parser preprocessing accepts `::` as a list head and rewrites `be:/` to
-`be:divide`. `app->`, `do`, `let-network`, and `let-compound` are explicitly
-removed and produce parser errors. Vectors are recursively parsed as syntax
-carriers; do not assume arbitrary top-level vector data is a supported literal.
+Parser preprocessing accepts only `::` as a list head. `be:/` is not reader
+syntax; use `be:divide` in an environment that explicitly binds behavior
+arithmetic. `do` is explicitly removed and produces a parser error. Former
+parser spellings such as `def-behavior`, `app->`, `let-network`, and
+`let-compound` have no parser semantics and are ordinary applications. Vectors
+are recursively parsed as syntax carriers; do not assume arbitrary top-level
+vector data is a supported literal.
 
 Closure output semantics matter:
 
