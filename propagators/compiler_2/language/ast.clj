@@ -94,12 +94,6 @@
                        name-slot name}
                 (some? body) (assoc body-slot (ast body)))))
 
-(defn def-cell [name inputs body]
-  (ast-object {type-slot :def-cell
-               name-slot name
-               inputs-slot (vec inputs)
-               body-slot (ast body)}))
-
 (defn ast [x]
   (cond
     (ast-node? x) (obj/compound-object x)
@@ -130,5 +124,4 @@
 (defn bindings [expr] (slot expr bindings-slot))
 (defn inputs [expr] (slot expr inputs-slot))
 (defn output [expr] (slot expr output-slot))
-
 

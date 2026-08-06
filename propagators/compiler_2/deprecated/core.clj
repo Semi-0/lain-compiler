@@ -90,7 +90,6 @@
 (def compile-def-net synchronous/compile-def-net)
 (def compile-def-constraint synchronous/compile-def-constraint)
 (def compile-def synchronous/compile-def)
-(def compile-def-cell synchronous/compile-def-cell)
 
 (defn compile-application
   [compile* state expr]
@@ -122,7 +121,6 @@
 (define-compile-adapter :def-net compile-def-net)
 (define-compile-adapter :def-constraint compile-def-constraint)
 (define-compile-adapter :def compile-def)
-(define-compile-adapter :def-cell compile-def-cell)
 (define-compile-adapter :application compile-application)
 
 (defn ^:deprecated compile-expr

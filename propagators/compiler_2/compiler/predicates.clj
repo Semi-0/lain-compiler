@@ -17,4 +17,3 @@
 (def def-net? (partial kind? :def-net))
 (def def-constraint? (partial kind? :def-constraint))
 (def definition? (partial kind? :def))
-(def def-cell? (partial kind? :def-cell))

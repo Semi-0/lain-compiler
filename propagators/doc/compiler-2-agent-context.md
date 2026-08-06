@@ -173,7 +173,7 @@ form `do` is intentionally not supported.
 | `(let [a expr ...] body...)` | Pure lowering into compiler-2 declarations and sequence traversal. |
 | `(when condition body...)` | Delay topology installation until the condition has a usable value. This is a topology gate, not Clojure truth-only branching: `false` is usable. |
 | `(:: [inputs] body...)` | Anonymous implicit-output retained closure. |
-| `(cell [inputs] body...)` | Alias shape for an implicit-output retained closure. |
+| `(cell-expr [inputs] body...)` | Named shape for an implicit-output retained closure. |
 | `(network [inputs] [outputs] body...)` | Anonymous retained closure with explicit applicant output cells. |
 | `(compound [inputs] output body...)` | Retained closure with one symbol or vector of explicit outputs. A map spec `{:inputs [...] :output ...}` is also accepted. |
 | `(def-net name [inputs] [outputs] body...)` | Define a named explicit-output retained closure. |
@@ -181,7 +181,7 @@ form `do` is intentionally not supported.
 | `(def name)` | Declare a free/storage cell. |
 | `(def name expr)` | Compile `expr` and define `name` to its binding. |
 | `(def-cell name)` / `(def-cell name expr)` | Storage/value declaration aliases. |
-| `(def-cell name [inputs] body...)` | Define an implicit-output callable cell closure. |
+| `(def name (cell-expr [inputs] body...))` | Define an implicit-output callable cell closure. |
 | `(def-cells a b ...)` | Lower to a sequence of free cell declarations. |
 | `(if condition then else)` | Lower to application of the `if` operator. |
 | `(cond [c1 e1 ... else e])` | Lower recursively to `if`/`switch` applications. |
@@ -340,8 +340,8 @@ Use the language closure forms for reusable topology:
 For one implicit output:
 
 ```clojure
-(def-cell square [x]
-  (* x x))
+(def square (cell-expr [x]
+  (* x x)))
 
 (square 5)
 ```

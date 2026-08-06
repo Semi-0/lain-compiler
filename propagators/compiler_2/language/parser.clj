@@ -74,9 +74,9 @@
   (ast/network (symbol-vector params ":: params")
                (body-form body "::")))
 
-(defn- parse-cell [[params & body]]
-  (ast/network (symbol-vector params "cell params")
-               (body-form body "cell")))
+(defn- parse-cell-expr [[params & body]]
+  (ast/network (symbol-vector params "cell-expr params")
+               (body-form body "cell-expr")))
 
 (defn- parse-network-form [[inputs outputs & body]]
   (ast/compound {:inputs (symbol-vector inputs "network inputs")
@@ -111,17 +111,12 @@
   (when-not (symbol? name)
     (parse-error "def-cell name must be a symbol" {:name name}))
   (cond
-    (nil? maybe-expr)
-    (ast/def* name nil)
-
-    (vector? maybe-expr)
-    (ast/def-cell name
-                  (symbol-vector maybe-expr "def-cell inputs")
-                  (body-form body "def-cell"))
-
     (seq body)
     (parse-error "def-cell expression form expects only a name and expression"
                  {:name name :expr maybe-expr :extra body})
+
+    (nil? maybe-expr)
+    (ast/def* name nil)
 
     :else
     (ast/def* name (parse-form maybe-expr))))
@@ -234,7 +229,7 @@
       let (parse-let (rest form))
       let-cell (parse-let-cell (rest form))
       :compiler/network (parse-network (rest form))
-      cell (parse-cell (rest form))
+      cell-expr (parse-cell-expr (rest form))
       network (parse-network-form (rest form))
       def-net (parse-def-net (rest form))
       def-constraint (parse-def-constraint (rest form))
@@ -263,4 +258,3 @@
   (parse-form (read-form source)))
 
 (def parse parse-string)
-

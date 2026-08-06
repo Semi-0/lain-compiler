@@ -26,7 +26,6 @@
 (def def-net? predicates/def-net?)
 (def def-constraint? predicates/def-constraint?)
 (def definition? predicates/definition?)
-(def def-cell? predicates/def-cell?)
 
 (def compile-literal synchronous/compile-literal)
 (def compile-symbol synchronous/compile-symbol)
@@ -39,7 +38,6 @@
 (def compile-def-net synchronous/compile-def-net)
 (def compile-def-constraint synchronous/compile-def-constraint)
 (def compile-def synchronous/compile-def)
-(def compile-def-cell synchronous/compile-def-cell)
 (def compile-application core/compile-application)
 
 (defn advance-binding [binding _state] binding)

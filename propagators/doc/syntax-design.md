@@ -126,7 +126,7 @@ Verified in tests:
 
 Current implementation:
 
-- zero-output closures created with `cell` or `::` allocate/return an
+- zero-output closures created with `cell-expr` or `::` allocate/return an
   application output cell when called;
 - the closure body result is projected into that returned output cell;
 - declared-output closures consume explicit output cells as tail applicants;
@@ -162,9 +162,9 @@ Current implementation:
 
 - `(def-cell name)` is a free-cell declaration, equivalent in binding behavior
   to `(def name)`;
-- `(def-cell name (cell ...))` binds `name` to a cell-producing expression;
-- the older `(def-cell name [args] body)` form remains as shorthand for a
-  zero-output cell closure.
+- `(def-cell name expr)` lowers directly to the ordinary `def` rule;
+- callable definitions use `(def name (cell-expr [args] body))` or
+  `(def name (:: [args] body))`.
 
 ### `def-cells`
 
@@ -252,7 +252,7 @@ Current implementation:
 ### Cell Closure
 
 ```clojure
-(cell [x]
+(cell-expr [x]
   (+ x 1))
 ```
 
@@ -263,7 +263,7 @@ Current implementation:
 
 Current implementation:
 
-- `cell` and `::` are zero-output closure forms;
+- `cell-expr` and `::` are zero-output closure forms;
 - applying them returns an output cell;
 - the body result is synced/projected into that output cell.
 

@@ -40,7 +40,7 @@ The current surface language is intentionally small:
 (:: [x]
   (+ x 1))
 
-(cell [x]
+(cell-expr [x]
   (+ x 1))
 
 (network [x] [out]
@@ -57,7 +57,7 @@ The current surface language is intentionally small:
     epoch))
 ```
 
-`::` and `cell` are zero-output closure forms: applying them returns the
+`::` and `cell-expr` are zero-output closure forms: applying them returns the
 closure body's result cell. `network` and `def-net` are declared-output network
 forms: applying them requires explicit output cells as the tail of the applicant
 list. The parser still produces AST data; `core.clj` compiles that AST directly.

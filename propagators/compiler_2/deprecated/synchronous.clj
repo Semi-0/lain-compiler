@@ -72,15 +72,6 @@
     (let [[state' binding] (h/new-cell state [:def (ast/name expr)])]
       (declarations/define-binding state' (ast/name expr) binding))))
 
-(defn compile-def-cell
-  [_compile* state expr]
-  (let [[state' closure-binding] (declarations/declare-closure state
-                                                  (ast/name expr)
-                                                  (ast/inputs expr)
-                                                  nil
-                                                  (ast/body expr))]
-    (declarations/define-binding state' (ast/name expr) closure-binding)))
-
 (defn compile-application
   [advance-f apply-f compile* state expr]
   (common/compile-application
@@ -112,7 +103,6 @@
          (common/on (common/expression-kind? :def-constraint)
                     compile-def-constraint)
          (common/on (common/expression-kind? :def) compile-def)
-         (common/on (common/expression-kind? :def-cell) compile-def-cell)
          (common/on (common/expression-kind? :application)
                     application-handler)
          compile-via-multifn)]

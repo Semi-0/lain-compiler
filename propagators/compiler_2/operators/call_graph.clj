@@ -48,7 +48,6 @@
       :def-net [(ast/body expr)]
       :def-constraint [(ast/body expr)]
       :def (keep identity [(ast/body expr)])
-      :def-cell [(ast/body expr)]
       [])))
 
 (defn call-sites

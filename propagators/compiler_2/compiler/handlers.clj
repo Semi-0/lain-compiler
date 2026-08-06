@@ -126,16 +126,6 @@
                                              (ast/name expr)
                                              binding)))))
 
-(defn compile-def-cell
-  [_compile-k state expr k]
-  (let [[state' binding]
-        (declarations/declare-closure state
-                                      (ast/name expr)
-                                      (ast/inputs expr)
-                                      nil
-                                      (ast/body expr))]
-    (finish k (declarations/define-binding state' (ast/name expr) binding))))
-
 (defn- built-in-cell-declaration
   [compile* operator-binding arg-bindings state out-id]
   (let [declarer (:application/cell-declarer state)]

@@ -31,7 +31,6 @@
    (cps/on predicates/def-net? handlers/compile-def-net)
    (cps/on predicates/def-constraint? handlers/compile-def-constraint)
    (cps/on predicates/definition? handlers/compile-def)
-   (cps/on predicates/def-cell? handlers/compile-def-cell)
    handlers/compile-application))
 
 (def compile* (dispatch/install-default-compiler!

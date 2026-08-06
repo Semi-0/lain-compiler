@@ -46,7 +46,6 @@
 (def compile-def-net deprecated/compile-def-net)
 (def compile-def-constraint deprecated/compile-def-constraint)
 (def compile-def deprecated/compile-def)
-(def compile-def-cell deprecated/compile-def-cell)
 (def compile-application deprecated/compile-application)
 
 (def ^:deprecated compiler-dispatch deprecated/compiler-dispatch)
