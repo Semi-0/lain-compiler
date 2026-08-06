@@ -65,10 +65,16 @@
                bindings-slot (vec bindings)
                body-slot (ast body)}))
 
-(defn network [inputs body]
-  (ast-object {type-slot :network
-               inputs-slot (vec inputs)
-               body-slot (ast body)}))
+(defn network
+  ([inputs body]
+   (ast-object {type-slot :network
+                inputs-slot (vec inputs)
+                body-slot (ast body)}))
+  ([inputs output body]
+   (ast-object {type-slot :network
+                inputs-slot (vec inputs)
+                output-slot output
+                body-slot (ast body)})))
 
 (defn compound [{:keys [inputs output]} body]
   (ast-object {type-slot :compound
@@ -124,4 +130,3 @@
 (defn bindings [expr] (slot expr bindings-slot))
 (defn inputs [expr] (slot expr inputs-slot))
 (defn output [expr] (slot expr output-slot))
-

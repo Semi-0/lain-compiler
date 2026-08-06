@@ -1,5 +1,5 @@
-(ns ^:deprecated propagators.compiler-2.core
-  "Deprecated namespace shim; use `propagators.compiler-2.deprecated.core`
+(ns ^:deprecated propagators.compiler-2.deprecated.legacy-core
+  "Archived legacy namespace shim; use `propagators.compiler-2.deprecated.core`
   for the synchronous compiler or `propagators.compiler-2.cps-core` for
   production compilation."
   (:require [propagators.compiler-2.deprecated.core :as deprecated]))

@@ -22,6 +22,12 @@
         (handler compile-k state expr k)
         (next compile-k state expr k)))))
 
+(defn transform-expr
+  "Transform a compiler handler's expression argument before delegation."
+  [transform handler]
+  (fn [compile-k state expr k]
+    (handler compile-k state (transform expr) k)))
+
 (defn compose-rules
   "Compose CPS rule functions around one final compiler handler."
   [& rules]

@@ -4,6 +4,7 @@
             [propagators.compiler-2.compiler.handlers :as handlers]
             [propagators.compiler-2.compiler.dispatch :as dispatch]
             [propagators.compiler-2.compiler.predicates :as predicates]
+            [propagators.compiler-2.compiler.rewrite :as rewrite]
             [propagators.compiler-2.compiler.basis :as h]
             [propagators.compiler-2.language.parser :as parser]
             [propagators.compiler-2.model.env :as env]
@@ -23,13 +24,19 @@
    (cps/on predicates/literal? handlers/compile-literal)
    (cps/on predicates/symbol? handlers/compile-symbol)
    (cps/on predicates/sequence? handlers/compile-sequence)
-   (cps/on predicates/let-cell? handlers/compile-let-cell)
+   (cps/on predicates/let-cell?
+           (cps/transform-expr rewrite/let-cell->let handlers/compile-let))
    (cps/on predicates/let? handlers/compile-let)
    (cps/on predicates/when-topology? handlers/compile-when-topology)
-   (cps/on predicates/network? handlers/compile-network-form)
-   (cps/on predicates/compound? handlers/compile-compound)
-   (cps/on predicates/def-net? handlers/compile-def-net)
-   (cps/on predicates/def-constraint? handlers/compile-def-constraint)
+   (cps/on predicates/network? handlers/compile-network)
+   (cps/on predicates/compound?
+           (cps/transform-expr rewrite/compound->network
+                               handlers/compile-network))
+   (cps/on predicates/def-net?
+           (cps/transform-expr rewrite/def-net->def handlers/compile-def))
+   (cps/on predicates/def-constraint?
+           (cps/transform-expr rewrite/def-constraint->def
+                               handlers/compile-def))
    (cps/on predicates/definition? handlers/compile-def)
    handlers/compile-application))
 

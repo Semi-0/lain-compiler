@@ -3,7 +3,7 @@
             [propagators.compiler-2.runtime.application :as application]
             [propagators.compiler-2.language.ast :as ast]
             [propagators.compiler-2.cps-core :as cps-core]
-            [propagators.compiler-2.core :as compiler-core]
+            [propagators.compiler-2.deprecated.core :as compiler-core]
             [propagators.compiler-2.compiler.dispatch :as compiler-dispatch]
             [propagators.compiler-2.model.env :as env]
             [propagators.compiler-2.compiler.basis :as h]

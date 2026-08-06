@@ -56,18 +56,29 @@
   [compile-k state expr k]
   (cps/compile-seq compile-k state (ast/body expr) k))
 
-(defn compile-let-cell
-  [compile-k state expr k]
-  (let [outer-env (:env state)
-        [body-state _bindings]
-        (declarations/declare-local-cells state :let-cell-env (ast/names expr))]
-    (cps/call compile-k body-state (ast/body expr)
-              (fn [state' binding]
-                (cps/continue k (assoc state' :env outer-env) binding)))))
+(defn- let-initializer
+  [[name value]]
+  (cond
+    (nil? value)
+    nil
+
+    :else
+    (ast/app (ast/sym '->) value (ast/sym name))))
 
 (defn compile-let
   [compile-k state expr k]
-  (cps/call compile-k state (declarations/lower-let expr) k))
+  (let [outer-env (:env state)
+        bindings (ast/bindings expr)
+        names (mapv first bindings)
+        initializers (vec (keep let-initializer bindings))
+        body (if (seq initializers)
+               (apply ast/sequence* (concat initializers [(ast/body expr)]))
+               (ast/body expr))
+        [body-state _bindings]
+        (declarations/declare-local-cells state :let-env names)]
+    (cps/call compile-k body-state body
+              (fn [state' binding]
+                (cps/continue k (assoc state' :env outer-env) binding)))))
 
 (defn compile-when-topology
   [compile-k state expr k]
@@ -86,45 +97,35 @@
                   condition-id
                   (ast/body expr))))))))
 
-(defn compile-network-form
-  [_compile-k state expr k]
-  (finish k (declarations/declare-closure state
-                                          (ast/inputs expr)
-                                          nil
-                                          (ast/body expr))))
-
-(defn compile-compound
+(defn compile-network
   [_compile-k state expr k]
   (finish k (declarations/declare-closure state
                                           (ast/inputs expr)
                                           (ast/output expr)
                                           (ast/body expr))))
 
-(defn compile-def-net
-  [_compile-k state expr k]
-  (let [[state' binding]
-        (declarations/declare-closure state
-                                      (ast/name expr)
-                                      (ast/inputs expr)
-                                      (ast/output expr)
-                                      (ast/body expr))]
-    (finish k (declarations/define-binding state' (ast/name expr) binding))))
-
-(defn compile-def-constraint
-  [_compile-k state expr k]
-  (finish k (declarations/declare-constraint (:compiler state) state expr)))
-
 (defn compile-def
   [compile-k state expr k]
-  (if-let [body (ast/body expr)]
-    (cps/call
-     compile-k (h/child state :body) body
-     (fn [state' body-binding]
-       (finish k (declarations/define-binding state' (ast/name expr) body-binding))))
-    (let [[state' binding] (h/new-cell state [:def (ast/name expr)])]
-      (finish k (declarations/define-binding state'
-                                             (ast/name expr)
-                                             binding)))))
+  (let [body (ast/body expr)
+        name (ast/name expr)]
+    (cond
+      (nil? body)
+      (let [[state' binding] (h/new-cell state [:def name])]
+        (finish k (declarations/define-binding state' name binding)))
+
+      (= :network (ast/type body))
+      (let [[state' binding]
+            (declarations/declare-closure state name
+                                          (ast/inputs body)
+                                          (ast/output body)
+                                          (ast/body body))]
+        (finish k (declarations/define-binding state' name binding)))
+
+      :else
+      (cps/call
+       compile-k (h/child state :body) body
+       (fn [state' body-binding]
+         (finish k (declarations/define-binding state' name body-binding)))))))
 
 (defn- built-in-cell-declaration
   [compile* operator-binding arg-bindings state out-id]

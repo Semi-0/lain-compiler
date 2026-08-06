@@ -4,7 +4,7 @@ Source files:
 
 - `propagators/compiler_2/language/parser.clj`
 - `propagators/compiler_2/language/ast.clj`
-- `propagators/compiler_2/compiler/core.clj`
+- `propagators/compiler_2/cps_core.clj`
 - `propagators/compiler_2/compiler/handlers.clj`
 - `propagators/compiler_2/compiler/predicates.clj`
 - `propagators/compiler_2/compiler/declarations.clj`
@@ -338,11 +338,12 @@ prepend another `on` rule without
 adding or replacing a global `defmethod`, then pass the resulting compiler as
 `:compiler` to `compile-expr`.
 
-`propagators.compiler-2.core`, `compiler.core`, and `predicate-core` are
-deprecated compatibility façades. The synchronous implementation is under
-`propagators.compiler-2.deprecated`. `core/g:compile`, `g:apply`, and
-`g:advance` retain their public identities, but none selects expressions on the
-production CPS path.
+The old `core` and `compiler.core` façades are archived as
+`deprecated.legacy-core` and `deprecated.compiler-core`. `predicate-core`
+remains a deprecated compatibility façade. The synchronous implementation is
+under `propagators.compiler-2.deprecated`; its `g:compile`, `g:apply`, and
+`g:advance` retain their public identities, but none selects expressions on
+the production CPS path.
 
 The environment has one internal authority: `:env` in compiler state. The
 three-argument `g:compile` methods remain compatibility adapters and copy their

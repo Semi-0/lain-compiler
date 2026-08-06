@@ -1,6 +1,7 @@
 (ns propagators.compiler-2-cps-test
   (:require [clojure.test :refer [deftest is testing]]
             [propagators.compiler-2.runtime.application :as application]
+            [propagators.compiler-2.compiler.rewrite :as rewrite]
             [propagators.compiler-2.language.ast :as ast]
             [propagators.compiler-2.cps-core :as compiler]
             [propagators.compiler-2.model.env :as env]
@@ -70,6 +71,40 @@
          (fn [_compile-k _state _expr _k]
            #(throw (ex-info "continuation failure" {}))))
         {} :expr))))
+
+(deftest transform-expr-composes-surface-terms-with-canonical-handlers
+  (let [seen (atom nil)
+        handler (cps/transform-expr
+                 #(update % :value inc)
+                 (fn [_compile-k state expr k]
+                   (reset! seen [state expr])
+                   (cps/continue k state (:value expr))))
+        compile* (cps/make-compiler handler)]
+    (is (= [{:compiler compile*} 2]
+           (compile* {} {:value 1})))
+    (is (= [{:compiler compile*} {:value 2}] @seen)))
+  (let [body (ast/lit 1)
+        let-expr (rewrite/let-cell->let (ast/let-cell ['x] body))
+        network-expr (rewrite/compound->network
+                      (ast/compound {:inputs ['x] :output ['out]} body))
+        def-expr (rewrite/def-net->def
+                  (ast/def-net 'f ['x] ['out] body))
+        constraint-expr (rewrite/def-constraint->def
+                         (ast/def-constraint 'same ['x 'y] body))
+        constraint-network (ast/body constraint-expr)]
+    (is (= :let (ast/type let-expr)))
+    (is (= [['x nil]] (ast/bindings let-expr)))
+    (is (= :network (ast/type network-expr)))
+    (is (= ['out] (ast/output network-expr)))
+    (is (= :def (ast/type def-expr)))
+    (is (= 'f (ast/name def-expr)))
+    (is (= ['x] (ast/inputs (ast/body def-expr))))
+    (is (= ['out] (ast/output (ast/body def-expr))))
+    (is (= :def (ast/type constraint-expr)))
+    (is (= 'same (ast/name constraint-expr)))
+    (is (= ['x 'y] (ast/inputs constraint-network)))
+    (is (nil? (ast/output constraint-network)))
+    (is (= 'y (ast/name (last (ast/body (ast/body constraint-network))))))))
 
 (deftest cps-default-preserves-synchronous-result-semantics
   (let [compiler-env (h/default-env)]

@@ -1,5 +1,5 @@
-(ns ^:deprecated propagators.compiler-2.compiler.core
-  "Deprecated namespace shim; use `propagators.compiler-2.cps-core`."
+(ns ^:deprecated propagators.compiler-2.deprecated.compiler-core
+  "Archived compiler namespace shim; use `propagators.compiler-2.cps-core`."
   (:require [propagators.compiler-2.cps-core :as cps]))
 
 (def compiler-result-key cps/compiler-result-key)
