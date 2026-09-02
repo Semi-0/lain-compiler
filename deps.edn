@@ -1,6 +1,6 @@
 {:paths ["src"]
- :deps {io.github.Semi-0/propagators-infra
-        {:git/url "https://github.com/Semi-0/propagators-infra.git"
+ :deps {io.github.Semi-0/lain-infrastructure
+        {:git/url "https://github.com/Semi-0/lain-infrastructure.git"
          :git/sha "4f541bd7b1c250be23ab422466333f885f696cc8"}}
  :aliases {:test {:extra-paths ["test"]
                   :main-opts ["-m" "run-tests"]}
