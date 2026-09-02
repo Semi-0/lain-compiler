@@ -416,7 +416,8 @@
   [state name source-id]
   (or (env/reserved-binding-id (:net state) (:env state) name (:seed state))
       (when (:reuse-existing-bindings? state)
-        (env/local-binding-id (:net state) (:env state) name))
+        (env/reusable-definition-binding-id
+         (:net state) (:env state) name))
       (fresh-definition-id state name source-id)))
 
 (defn- copy-binding-value
@@ -437,7 +438,8 @@
     (let [reserved-id (env/reserved-binding-id (:net state) (:env state) name
                                                 (:seed state))
           reused-id (when (:reuse-existing-bindings? state)
-                      (env/local-binding-id (:net state) (:env state) name))
+                      (env/reusable-definition-binding-id
+                       (:net state) (:env state) name))
           target-id (definition-target-id state name source-id)
           target-binding (if (env/compound-binding? binding)
                            (env/compound-binding target-id)

@@ -252,6 +252,15 @@
                    binding-id)
         (assoc-in [:frames env-id :current-bindings sym] binding-id))))
 
+(defn- declare-imported-binding-address
+  [network env-id sym binding-id]
+  (net/update-net-dict-entry
+   (declare-binding-address network env-id sym binding-id)
+   lexical-topology-key
+   #(update-in (or % {}) [:frames env-id :imported-bindings sym]
+               (fnil conj #{})
+               binding-id)))
+
 (defn- reserve-binding-address
   [network env-id sym binding-id owner]
   (net/update-net-dict-entry
@@ -779,6 +788,24 @@
         (when (= 1 (count bound-ids))
           (first bound-ids)))))
 
+(defn reusable-definition-binding-id
+  "Return the current local address only when it was not installed by import."
+  [network env-id sym]
+  (let [binding-id (local-binding-id network env-id sym)
+        imported-ids
+        (get-in (net/network-dict-entry network lexical-topology-key)
+                [:frames env-id :imported-bindings sym]
+                #{})]
+    (cond
+      (nil? binding-id)
+      nil
+
+      (contains? imported-ids binding-id)
+      nil
+
+      :else
+      binding-id)))
+
 (defn lexical-binding-status
   "Describe fixed-topology resolution as `:found`, `:missing`, or `:ambiguous`.
 
@@ -1264,7 +1291,7 @@
       (reduce-kv
        (fn [n [sym _source] declaration]
          (if-let [id (binding-id (:binding declaration))]
-           (declare-binding-address n env-id sym id)
+           (declare-imported-binding-address n env-id sym id)
            n))
        network
        slots))))

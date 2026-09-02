@@ -136,6 +136,31 @@
     (is (empty? props))
     (is (= network installed))))
 
+(deftest local-definitions-shadow-imported-built-in-operators
+  (doseq [[operator-name value] [['+ 9] ['list 7]]]
+    (testing (str operator-name " is shadowed by a fixed local definition")
+      (let [compiled (compiler/compile-source
+                      (str "(def " operator-name " " value ")")
+                      (h/default-env)
+                      {:seed [:local-first operator-name]
+                       :reuse-existing-bindings? true})
+            topology (net/network-dict-entry
+                      (:net compiled) env/lexical-topology-key)
+            binding-ids (get-in topology
+                                [:frames (:env compiled)
+                                 :bindings operator-name])
+            imported-ids (get-in topology
+                                 [:frames (:env compiled)
+                                  :imported-bindings operator-name])
+            result (run-compiled compiled)
+            resolved-id (env/resolve-binding-id
+                         result (:env compiled) operator-name)]
+        (is (= 2 (count binding-ids)))
+        (is (= 1 (count imported-ids)))
+        (is (not (contains? imported-ids resolved-id)))
+        (is (= (:cell compiled) resolved-id))
+        (is (= value (semantic-value result resolved-id)))))))
+
 (deftest cps-compilation-is-stack-safe
   (testing "five thousand nested lexical scopes"
     (let [expr (reduce (fn [body idx]
