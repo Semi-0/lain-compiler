@@ -4,7 +4,7 @@
   These values replace env-bound primitive functions that previously carried
   compiler hooks in Clojure metadata. User-authored network closures remain
   `propagators.compiler-2.model.closure-value` data and are evaluated by
-  `propagators.compiler-2.runtime.application`.
+  `propagators.compiler-2.lowering.application`.
   "
   (:require [propagators.cells.value :as value]
             [propagators.datastructures.compound-object :as obj]

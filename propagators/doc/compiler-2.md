@@ -9,7 +9,7 @@ Source files:
 - `propagators/compiler_2/compiler/predicates.clj`
 - `propagators/compiler_2/compiler/declarations.clj`
 - `propagators/compiler_2/operators/call_graph.clj`
-- `propagators/compiler_2/runtime/application.clj`
+- `propagators/compiler_2/lowering/application.clj`
 - `propagators/compiler_2/model/closure_value.clj`
 - `propagators/compiler_2/model/context.clj`
 - `propagators/compiler_2/model/env.clj`

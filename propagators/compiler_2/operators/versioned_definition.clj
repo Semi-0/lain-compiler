@@ -9,7 +9,7 @@
             [propagators.compiler-2.model.env :as env]
             [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.compiler-2.operators.block-premise :as premise]
-            [propagators.compiler-2.runtime.topology-effects :as topology-effects]
+            [propagators.compiler-2.lowering.topology-effects :as topology-effects]
             [propagators.datastructures.tms.distributed :as tms]
             [propagators.gur.flat :as fvm]
             [propagators.message :refer [message]]

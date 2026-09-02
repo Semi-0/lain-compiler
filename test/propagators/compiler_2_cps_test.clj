@@ -1,6 +1,6 @@
 (ns propagators.compiler-2-cps-test
   (:require [clojure.test :refer [deftest is testing]]
-            [propagators.compiler-2.runtime.application :as application]
+            [propagators.compiler-2.lowering.application :as application]
             [propagators.compiler-2.compiler.rewrite :as rewrite]
             [propagators.compiler-2.language.ast :as ast]
             [propagators.compiler-2.cps-core :as compiler]

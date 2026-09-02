@@ -5,7 +5,7 @@
             [propagators.compiler-2.compiler.dispatch :as dispatch]
             [propagators.compiler-2.model.env :as env]
             [propagators.compiler-2.compiler.basis :as h]
-            [propagators.compiler-2.runtime.lazy-topology :as lazy-topology]
+            [propagators.compiler-2.lowering.lazy-topology :as lazy-topology]
             [propagators.compiler-common.core :as common]))
 
 (defn compile-literal

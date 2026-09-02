@@ -43,7 +43,7 @@
   [closure-id closure-info network arg-ids out-id]
   (let [apply-messages (activation-messages
                         ((requiring-resolve
-                          'propagators.compiler-2.runtime.application/closure-application-messages)
+                          'propagators.compiler-2.lowering.application/closure-application-messages)
                          closure-id
                          nil
                          arg-ids
@@ -210,7 +210,7 @@
       []
       (let [apply-messages (activation-messages
                             ((requiring-resolve
-                              'propagators.compiler-2.runtime.application/closure-application-messages)
+                              'propagators.compiler-2.lowering.application/closure-application-messages)
                              closure-id
                              nil
                              inner-arg-ids

@@ -45,7 +45,7 @@
                    (nb/install-cell args-id)
                    (nb/install-cell closure-cell-id closure-info closure-info))
             [_prop-id n1] (((requiring-resolve
-                             'propagators.compiler-2.runtime.application/p:apply-closure)
+                             'propagators.compiler-2.lowering.application/p:apply-closure)
                             closure-cell-id
                             args-id
                             arg-ids

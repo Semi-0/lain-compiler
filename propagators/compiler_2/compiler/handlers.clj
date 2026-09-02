@@ -4,7 +4,7 @@
             [propagators.compiler-2.compiler.declarations :as declarations]
             [propagators.compiler-2.model.env :as env]
             [propagators.compiler-2.compiler.basis :as h]
-            [propagators.compiler-2.runtime.lazy-topology :as lazy-topology]
+            [propagators.compiler-2.lowering.lazy-topology :as lazy-topology]
             [propagators.compiler-2.model.operator-value :as operator-value]
             [propagators.compiler-common.cps :as cps]
             [propagators.compiler-common.core :as common]))

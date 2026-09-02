@@ -1,6 +1,6 @@
 (ns propagators.compiler-2.cps-core
   "Canonical stack-safe compiler-2 implementation."
-  (:require [propagators.compiler-2.runtime.application :as application]
+  (:require [propagators.compiler-2.lowering.application :as application]
             [propagators.compiler-2.compiler.handlers :as handlers]
             [propagators.compiler-2.compiler.dispatch :as dispatch]
             [propagators.compiler-2.compiler.predicates :as predicates]

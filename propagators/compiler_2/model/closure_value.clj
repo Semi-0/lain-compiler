@@ -3,7 +3,7 @@
 
   A compiler-2 closure is data only: it records the body AST, lexical
   environment, formal inputs, optional output name, and lexical scope metadata.
-  Application behavior lives in `propagators.compiler-2.runtime.application`.
+  Application behavior lives in `propagators.compiler-2.lowering.application`.
   "
   (:require [propagators.cells.value :as value]
             [propagators.datastructures.compound-object :as obj]))

@@ -1,8 +1,8 @@
 (ns propagators-compiler-2-application-bench
-  (:require [propagators.compiler-2.runtime.application :as compatibility]
+  (:require [propagators.compiler-2.lowering.application :as compatibility]
             [propagators.compiler-2.compiler.basis :as h]
             [propagators.compiler-2.main :as main]
-            [propagators.compiler-2.runtime.retained-application :as retained]
+            [propagators.compiler-2.lowering.retained-application :as retained]
             [propagators.gur.flat :as fvm]
             [propagators.network :as net]
             [propagators.network-builder :as nb]

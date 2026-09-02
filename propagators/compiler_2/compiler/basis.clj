@@ -170,7 +170,7 @@
   "Declare one reactive cons topology for an ordinary runtime application."
   [network element-ids out-id]
   ((requiring-resolve
-    'propagators.compiler-2.runtime.topology-effects/declare-once)
+    'propagators.compiler-2.lowering.topology-effects/declare-once)
    network
    [:list out-id]
    out-id
@@ -499,7 +499,7 @@
       (let [[expr-id parent-env-id & watch-ids] (vec arg-ids)
             child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)]
         ((requiring-resolve
-          'propagators.compiler-2.runtime.application/execute-sub-env-messages-with)
+          'propagators.compiler-2.lowering.application/execute-sub-env-messages-with)
          compile*
          parent-env-id
          expr-id
@@ -509,7 +509,7 @@
     :install (fn [network arg-ids out-id]
                (let [[expr-id parent-env-id & watch-ids] (vec arg-ids)
                      child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)]
-                 (((requiring-resolve 'propagators.compiler-2.runtime.application/p:execute-sub-env)
+                 (((requiring-resolve 'propagators.compiler-2.lowering.application/p:execute-sub-env)
                    parent-env-id
                    expr-id
                    watch-ids
@@ -520,7 +520,7 @@
                 (let [[expr-id parent-env-id & _watch-ids] (vec arg-ids)
                       child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)]
                   ((requiring-resolve
-                    'propagators.compiler-2.runtime.application/execute-sub-env-messages)
+                    'propagators.compiler-2.lowering.application/execute-sub-env-messages)
                    parent-env-id
                    expr-id
                    child-env-id
