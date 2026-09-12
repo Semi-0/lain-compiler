@@ -1,7 +1,6 @@
 (ns propagators.compiler.main
   "Compatibility facade for compiler-2."
-  (:require [propagators.compiler.model.application-value :as application-value]
-            [propagators.compiler.operators.behavior :as behavior]
+  (:require [propagators.compiler.operators.behavior :as behavior]
             [propagators.compiler.model.closure-value :as closure-value]
             [propagators.compiler.cps-core :as compiler]
             [propagators.compiler.deprecated.core :as core]
@@ -17,17 +16,6 @@
 (def closure-inputs-slot closure-value/closure-inputs-slot)
 (def closure-output-slot closure-value/closure-output-slot)
 (def closure-scope-slot closure-value/closure-scope-slot)
-
-(def application-operator-ast-slot
-  application-value/application-operator-ast-slot)
-(def application-operator-cell-slot
-  application-value/application-operator-cell-slot)
-(def application-args-slot application-value/application-args-slot)
-(def application-arg-cells-slot application-value/application-arg-cells-slot)
-(def application-output-slot application-value/application-output-slot)
-(def application-context-slot application-value/application-context-slot)
-(def application-lowering-slot application-value/application-lowering-slot)
-(def application-caller-slot application-value/application-caller-slot)
 
 (def g:compile core/g:compile)
 (def g:apply core/g:apply)

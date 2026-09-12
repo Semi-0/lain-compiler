@@ -1,7 +1,7 @@
 {:paths ["src"]
  :deps {io.github.Semi-0/lain-infrastructure
         {:git/url "https://github.com/Semi-0/lain-infrastructure.git"
-         :git/sha "4f541bd7b1c250be23ab422466333f885f696cc8"}}
+         :git/sha "4df5523f709289854e44676a91f10a96b68603f5"}}
  :aliases {:test {:extra-paths ["test"]
                   :main-opts ["-m" "run-tests"]}
            :bench {:extra-paths ["dev/bench"]}}}

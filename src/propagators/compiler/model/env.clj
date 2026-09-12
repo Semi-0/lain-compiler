@@ -12,6 +12,7 @@
             [propagators.infra.datastructures.compound-object :as obj]
             [propagators.infra.datastructures.reducer-cell :as reducer]
             [propagators.infra.datastructures.scope-source :as scope-source]
+            [propagators.infra.gur :as gur]
             [propagators.infra.gur.flat :as fvm]
             [propagators.infra.ids :as ids]
             [propagators.infra.install :as i]
@@ -251,15 +252,6 @@
                    (fnil conj #{})
                    binding-id)
         (assoc-in [:frames env-id :current-bindings sym] binding-id))))
-
-(defn- declare-imported-binding-address
-  [network env-id sym binding-id]
-  (net/update-net-dict-entry
-   (declare-binding-address network env-id sym binding-id)
-   lexical-topology-key
-   #(update-in (or % {}) [:frames env-id :imported-bindings sym]
-               (fnil conj #{})
-               binding-id)))
 
 (defn- reserve-binding-address
   [network env-id sym binding-id owner]
@@ -541,77 +533,68 @@
   ([_lookup-key sym env-id out-id]
    (p:structural-lexical-access sym env-id out-id)))
 
-(declare local-first-route-effects)
+(defn- local-binding
+  [sym frame out]
+  (fn [ctx]
+    (-> ctx
+        (i/slot sym :binding-slot frame)
+        (i/slot binding-value-key :binding :binding-slot)
+        (i/copy :binding out))))
 
-(defn- local-first-local-effects
-  [network sym frame-id out-id install-key]
-  (let [slot-id (stable-node-id install-key :slot)
-        value-id (stable-node-id install-key :value)]
-    (-> (i/context network install-key)
-        (i/slot sym slot-id frame-id)
-        (i/slot binding-value-key value-id slot-id)
-        (i/install :binding-copy stdlib-prop/id value-id out-id)
-        i/effects)))
+(defn- parent-binding
+  [frame out]
+  (fn [ctx]
+    (-> ctx
+        (i/slot env-parent-key :parent frame)
+        (i/recur [:parent] out))))
 
-(defn- local-first-local-activation
-  [sym frame-id out-id install-key]
-  (fn [inputs _outputs network]
-    (let [present? (net/network-cell-strongest network (first inputs))]
-      (if (true? present?)
-        {:effects (local-first-local-effects network
-                                             sym
-                                             frame-id
-                                             out-id
-                                             install-key)}
-        []))))
+(defn lexical-access-declaration
+  "A flat recursive declaration that selects the nearest declared local."
+  [sym]
+  (gur/recursive-declaration
+   (symbol (str "compiler-2-lexical-access-" sym))
+   (fn [ctx [frame-id] out-id]
+     (-> ctx
+         (i/$ {:frame frame-id :out out-id})
+         (i/slot env-local-bindings-key :local-names :frame)
+         (i/install :contains-local
+                    (p:contains-binding? sym)
+                    :local-names
+                    :local-present)
+         (i/install :missing-local
+                    (p:missing-binding? sym)
+                    :local-names
+                    :local-missing)
+         (i/when-named :local-binding
+                       :local-present
+                       (local-binding sym :frame :out))
+         (i/when-named :parent-frame
+                       :local-missing
+                       (parent-binding :frame :out))))))
 
-(defn- local-first-parent-activation
-  [sym parent-id out-id install-key]
-  (fn [inputs _outputs network]
-    (let [[missing-id parent-id*] inputs
-          missing? (net/network-cell-strongest network missing-id)
-          parent-env (net/network-cell-strongest network parent-id*)]
-      (if (and (true? missing?)
-               (not (value/unusable? parent-env)))
-        {:effects (local-first-route-effects network
-                                             sym
-                                             parent-id
-                                             out-id
-                                             install-key)}
-        []))))
+(defn lexical-access-id
+  [sym]
+  (gur/stable-node-id [:compiler-2 :lexical-access sym]))
 
-(defn- local-first-route-effects
-  [network sym frame-id out-id install-key]
-  (let [bindings-id (stable-node-id install-key :local-bindings)
-        present-id (stable-node-id install-key :binding-present?)
-        missing-id (stable-node-id install-key :binding-missing?)
-        parent-id (stable-node-id install-key :parent)]
-    (-> (i/context network install-key)
-        (i/slot env-local-bindings-key bindings-id frame-id)
-        (i/install :contains-binding
-                   (p:contains-binding? sym)
-                   bindings-id
-                   present-id)
-        (i/install :missing-binding
-                   (p:missing-binding? sym)
-                   bindings-id
-                   missing-id)
-        (i/slot env-parent-key parent-id frame-id)
-        (i/prop :local-binding
-                [present-id]
-                []
-                (local-first-local-activation sym
-                                              frame-id
-                                              out-id
-                                              [install-key :local-binding]))
-        (i/prop :parent-frame
-                [missing-id parent-id]
-                []
-                (local-first-parent-activation sym
-                                               parent-id
-                                               out-id
-                                               [install-key :parent-frame]))
-        i/effects)))
+(defn- ensure-lexical-access-closure
+  [network sym closure-id]
+  (let [candidate (net/network-cell-strongest network closure-id)]
+    (cond
+      (value/nothing? candidate)
+      (nb/seed-cell network closure-id (lexical-access-declaration sym))
+
+      (gur/recursive-closure? candidate)
+      network
+
+      (value/contradiction? candidate)
+      network
+
+      :else
+      (throw
+       (ex-info "Lexical access closure cell contains an unsupported value"
+                {:symbol sym
+                 :closure-id closure-id
+                 :value candidate})))))
 
 (defn p:lexical-access-local-first
   "Resolve `sym` to the nearest lexical binding and copy that raw binding to
@@ -623,16 +606,16 @@
   application dispatch.
   "
   [sym env-id out-id]
-  (let [install-key [:compiler-2 :lexical-access-local-first sym env-id out-id]]
-    (fn [network]
-      (-> (i/context network install-key)
-          (update :effects into
-                  (local-first-route-effects network
-                                             sym
-                                             env-id
-                                             out-id
-                                             [install-key :root]))
-          apply-install-context))))
+  (fn [network]
+    (let [closure-id (lexical-access-id sym)
+          prepared (-> network
+                       (nb/ensure-cell closure-id)
+                       (nb/ensure-cell env-id)
+                       (nb/ensure-cell out-id))
+          seeded (ensure-lexical-access-closure prepared sym closure-id)
+          effect (gur/apply-closure-effect closure-id [env-id] out-id)
+          [_ installed] (core/eval-activation-result effect seeded)]
+      [[(:id effect)] installed])))
 
 (defn binding-id [x]
   (cond
@@ -787,24 +770,6 @@
       (let [bound-ids (local-binding-ids network env-id sym)]
         (when (= 1 (count bound-ids))
           (first bound-ids)))))
-
-(defn reusable-definition-binding-id
-  "Return the current local address only when it was not installed by import."
-  [network env-id sym]
-  (let [binding-id (local-binding-id network env-id sym)
-        imported-ids
-        (get-in (net/network-dict-entry network lexical-topology-key)
-                [:frames env-id :imported-bindings sym]
-                #{})]
-    (cond
-      (nil? binding-id)
-      nil
-
-      (contains? imported-ids binding-id)
-      nil
-
-      :else
-      binding-id)))
 
 (defn lexical-binding-status
   "Describe fixed-topology resolution as `:found`, `:missing`, or `:ambiguous`.
@@ -1242,12 +1207,9 @@
        (declare-binding-address installed env-id sym binding-id)])))
 
 (defn p:declare-canonical-local
-  "Record one compiler-owned fixed address without materializing a slot path."
+  "Declare one compiler-owned fixed address as live compound topology."
   [sym env-id binding-id]
-  (fn [network]
-    [[] (-> network
-            (nb/ensure-cell binding-id)
-            (declare-binding-address env-id sym binding-id))]))
+  (p:declare-fixed-local sym env-id binding-id))
 
 (defn p:reserve-fixed-local
   "Declare a fixed local and mark its address for the next same-frame `def`."
@@ -1291,63 +1253,116 @@
       (reduce-kv
        (fn [n [sym _source] declaration]
          (if-let [id (binding-id (:binding declaration))]
-           (declare-imported-binding-address n env-id sym id)
+           (declare-binding-address n env-id sym id)
            n))
        network
        slots))))
 
-(defn import-environment
+(defn- imported-binding-addresses
+  [bindings]
+  (let [slots
+        (cond
+          (reducer/reducer-cell? bindings)
+          (reducer/reducer-slots bindings)
+
+          (map? bindings)
+          bindings
+
+          :else
+          {})]
+    (reduce-kv
+     (fn [addresses [sym _source] declaration]
+       (let [id (binding-id (:binding declaration))]
+         (cond
+           (ids/node-id? id)
+           (conj addresses [sym id])
+
+           :else
+           addresses)))
+     []
+     slots)))
+
+(defn- p:declare-imported-local
+  [sym env-id binding-id]
+  (let [install-key [:compiler-2 :imported-local env-id sym binding-id]
+        slot-id (stable-node-id install-key :slot)
+        descriptor-id (stable-node-id install-key :descriptor)]
+    (fn [network]
+      (let [[prop-ids installed]
+            (-> (i/context network install-key)
+                (i/slot sym slot-id env-id)
+                (i/tell descriptor-id (cell-binding binding-id))
+                (i/slot binding-value-key descriptor-id slot-id)
+                apply-install-context)]
+        [prop-ids
+         (declare-binding-address installed env-id sym binding-id)]))))
+
+(defn import-environment-topology
   "Install a legacy compound environment as one live environment cell.
 
   Direct reducer bindings are moved into stable value cells; the environment
   reducer retains only binding descriptors. Already-addressed bindings are
-  preserved. Returns `[network env-id]`.
+  preserved. Returns `{:net :env-id :prop-ids}` so callers can schedule every
+  slot propagator that keeps the imported compound live.
   "
-  [network env-id environment]
+  ([network env-id environment]
+   (import-environment-topology network env-id environment
+                                (fn [_sym binding] binding)))
+  ([network env-id environment normalize-binding]
   (let [bindings (obj/slot-value environment env-bindings-key)
         [network bindings']
         (if-not (reducer/reducer-cell? bindings)
           [network bindings]
           (reduce-kv
            (fn [[n slots] [sym source :as slot-key] declaration]
-             (let [binding (:binding declaration)]
+             (let [binding (normalize-binding sym (:binding declaration))]
                (if (binding-id binding)
-                 [n (assoc slots slot-key declaration)]
+                 [n (assoc slots slot-key
+                           (assoc declaration :binding binding))]
                  (let [value-id (imported-binding-id env-id sym source)]
                    [(nb/seed-cell (nb/ensure-cell n value-id) value-id binding)
                     (assoc slots slot-key
                            (assoc declaration :binding (cell-binding value-id)))]))))
            [network {}]
            (reducer/reducer-slots bindings)))
-        descriptors
-        (if (reducer/reducer-cell? bindings')
-          {}
-          (reduce-kv
-           (fn [m [_sym _source] {:keys [lexical/symbol binding]}]
-             (assoc m symbol binding))
-           {}
-           bindings'))
         environment'
-        (if (reducer/reducer-cell? bindings)
-          (obj/compound-object
-           (reduce-kv
-            (fn [m sym binding]
-              (if (contains? m sym)
-                (assoc m sym (binding-slot binding))
-                m))
-            (assoc (object->map environment)
-                   env-bindings-key
-                   (reducer/reducer-cell (reducer/reducer-id bindings)
-                                         (reducer/merge-net bindings)
-                                         (reducer/strongest-net bindings)
-                                         bindings'))
-            descriptors))
-          environment)]
-    [(-> network
-         (nb/ensure-cell env-id)
-         (nb/seed-cell env-id environment')
-         (declare-imported-addresses env-id environment' bindings'))
-     env-id]))
+        (obj/compound-object
+         (let [metadata
+               (select-keys (object->map environment) env-internal-keys)]
+           (cond
+             (reducer/reducer-cell? bindings)
+             (assoc metadata
+                    env-bindings-key
+                    (reducer/reducer-cell (reducer/reducer-id bindings)
+                                          (reducer/merge-net bindings)
+                                          (reducer/strongest-net bindings)
+                                          bindings'))
+
+             :else
+             metadata)))]
+    (let [seeded
+          (-> network
+              (nb/ensure-cell env-id)
+              (nb/seed-cell env-id environment')
+              (declare-imported-addresses env-id environment' bindings'))
+          [prop-ids installed]
+          (reduce
+           (fn [[props current] [sym binding-id]]
+             (let [[new-props next-network]
+                   ((p:declare-imported-local sym env-id binding-id) current)]
+               [(into props new-props) next-network]))
+           [[] seeded]
+           (imported-binding-addresses bindings'))]
+      {:net installed
+       :env-id env-id
+       :prop-ids (vec prop-ids)}))))
+
+(defn import-environment
+  "Compatibility wrapper returning `[network env-id]`."
+  [network env-id environment]
+  (let [{:keys [net env-id]}
+        (import-environment-topology network env-id environment)]
+    [net env-id]))
 
 (defn- declared-binding-id
   [env-id sym binding]

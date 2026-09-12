@@ -17,6 +17,7 @@
             [propagators.infra.datastructures.compound-object :as obj]
             [propagators.infra.datastructures.dependency :as dependency]
             [propagators.infra.datastructures.scope-source :as scope-source]
+            [propagators.infra.gur :as gur]
             [propagators.infra.ids :as ids]
             [propagators.infra.network :as net]
             [propagators.infra.network-builder :as nb]))
@@ -191,31 +192,23 @@
     (is (= body (:body multiple)))
     (is (= :sequence (ast/type (:body implicit))))))
 
-(deftest cell-declaration-strategy-is-injectable
+(deftest runtime-cell-application-is-canonical-flat-gur
   (let [operator-id (ids/new-node-id)
         network (nb/install-cell net/empty-net operator-id)
         compiler-env (env/bind-local (h/default-env)
                                      'later
-                                     (env/cell-binding operator-id))
-        calls (atom 0)
-        declarer (fn [_compile* _operator _operands state out-id]
-                   (swap! calls inc)
-                   [state (env/cell-binding out-id)])]
-    (compiler/compile-expr (ast/app (ast/sym 'later))
-                           compiler-env
-                           {:net network
-                            :application/cell-declarer declarer})
-    (is (= 1 @calls))
-    (is (= compiler-core/declare-runtime-cell-application
-           (compiler-core/resolve-cell-declarer {})))
-    (is (= compiler-core/declare-retained-cell-application
-           (compiler-core/resolve-cell-declarer
-            {:application/cell-declarer :retained-frame})))
-    (is (thrown-with-msg?
-         clojure.lang.ExceptionInfo
-         #"unknown application cell declarer"
-         (compiler-core/resolve-cell-declarer
-          {:application/cell-declarer :unknown})))))
+                                     (env/cell-binding operator-id))]
+    (let [compiled
+          (compiler/compile-expr
+           (ast/app (ast/sym 'later))
+           compiler-env
+           {:net network})
+          applications (application/application-topologies (:net compiled))
+          application-id (:application-id (first applications))
+          apply-prop-id (gur/stable-node-id [application-id :apply-prop])]
+      (is (= 1 (count applications)))
+      (is (= [application-id] (:applications compiled)))
+      (is (contains? (set (:props compiled)) apply-prop-id)))))
 
 (deftest behavior-compiler-reuses-composed-traversal-with-own-values
   (let [behavior-result (behavior-compiler/compile-expr

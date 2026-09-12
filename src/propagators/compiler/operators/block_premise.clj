@@ -116,10 +116,14 @@
   (let [state-ids (mapv :premise/state-cell contexts)
         value-update (h/strongest-or-nothing network value-id)
         source-content (net/network-cell-content network value-id)
-        state-contents (mapv #(net/network-cell-content network %) state-ids)]
-    (if-let [update (support-update claim-id value-update source-content
-                                    state-contents contexts)]
+        state-contents (mapv #(net/network-cell-content network %) state-ids)
+        update (support-update claim-id value-update source-content
+                               state-contents contexts)]
+    (cond
+      update
       [(message out-id update)]
+
+      :else
       [])))
 
 (defn p:block-premise

@@ -15,7 +15,16 @@
 
 (defn compile-literal
   [_compile-k state expr k]
-  (finish k (h/new-cell state :literal (ast/value expr))))
+  (let [candidate (ast/value expr)]
+    (cond
+      (fn? (operator-value/operator-direct-compiler candidate))
+      (cps/continue k state candidate)
+
+      (fn? (operator-value/operator-direct-installer candidate))
+      (cps/continue k state candidate)
+
+      :else
+      (finish k (h/new-cell state :literal candidate)))))
 
 (defn- compile-accessed-symbol
   [state sym k]
@@ -42,13 +51,26 @@
                      (declarations/reserve-fixed-local sym binding-id))]
     (cps/continue k declared (env/cell-binding binding-id))))
 
+(defn- compile-found-symbol
+  [state binding-id k]
+  (let [candidate (h/strongest-or-nothing (:net state) binding-id)]
+    (cond
+      (fn? (operator-value/operator-direct-compiler candidate))
+      (cps/continue k state candidate)
+
+      (fn? (operator-value/operator-direct-installer candidate))
+      (cps/continue k state candidate)
+
+      :else
+      (cps/continue k state (env/cell-binding binding-id)))))
+
 (defn compile-symbol
   [_compile-k state expr k]
   (let [sym (ast/name expr)
         {:keys [status binding/id]}
         (env/lexical-binding-status (:net state) sym (:env state))]
     (case status
-      :found (cps/continue k state (env/cell-binding id))
+      :found (compile-found-symbol state id k)
       :missing (compile-free-symbol state sym k)
       (compile-accessed-symbol state sym k))))
 
@@ -127,23 +149,9 @@
        (fn [state' body-binding]
          (finish k (declarations/define-binding state' name body-binding)))))))
 
-(defn- built-in-cell-declaration
-  [compile* operator-binding arg-bindings state out-id]
-  (let [declarer (:application/cell-declarer state)]
-    (cond
-      (or (nil? declarer) (= :runtime declarer))
-      (declarations/declare-runtime-cell-application-bindings
-       compile* operator-binding arg-bindings state out-id)
-
-      (= :retained-frame declarer)
-      (declarations/declare-retained-cell-application-bindings
-       compile* operator-binding arg-bindings state out-id)
-
-      (fn? declarer)
-      nil
-
-      :else
-      (declarations/resolve-cell-declarer state))))
+(defn compile-def-constraint
+  [compile-k state expr k]
+  (finish k (declarations/declare-constraint compile-k state expr)))
 
 (defn- declare-compiled-application
   [compile* operator-binding arg-bindings state out-id]
@@ -154,32 +162,12 @@
      compile* operator-binding arg-bindings state out-id)
 
     (env/binding-id operator-binding)
-    (or (built-in-cell-declaration compile* operator-binding
-                                   arg-bindings state out-id)
-        (throw (ex-info "custom cell declarer requires operand forms"
-                        {:application/cell-declarer
-                         (:application/cell-declarer state)})))
+    (declarations/declare-runtime-cell-application-bindings
+     compile* operator-binding arg-bindings state out-id)
 
     :else
     (throw (ex-info "application operator is not callable"
                     {:operator operator-binding}))))
-
-(defn- custom-cell-declarer?
-  [operator-binding state]
-  (and (env/binding-id operator-binding)
-       (fn? (:application/cell-declarer state))))
-
-(defn- known-operator
-  "Use a presently known primitive declaration strategy without changing how
-  ordinary symbol compilation exposes its canonical cell."
-  [binding state]
-  (if-let [id (env/binding-id binding)]
-    (let [candidate (h/strongest-or-nothing (:net state) id)]
-      (if (or (operator-value/operator-closure? candidate)
-              (fn? candidate))
-        candidate
-        binding))
-    binding))
 
 (defn compile-application
   [compile-k state expr k]
@@ -191,24 +179,21 @@
      (fn [state' op-binding]
        (let [state' (common/with-path state' base-path)
              [state'' operator-binding out-id]
-             (common/prepare-application known-operator
+             (common/prepare-application (fn [binding _state] binding)
                                          state' op op-binding)
              compile* (:compiler state'')
              direct-compiler
-             (and (operator-value/operator-closure? operator-binding)
-                  (operator-value/operator-direct-compiler operator-binding))]
+             (operator-value/operator-direct-compiler operator-binding)
+             direct-installer
+             (operator-value/operator-direct-installer operator-binding)]
          (cond
-           direct-compiler
+           (fn? direct-compiler)
            (direct-compiler compile-k state'' operand-forms out-id k)
 
-           (and (operator-value/operator-closure? operator-binding)
-                (operator-value/operator-direct-installer operator-binding))
-           (finish k (declarations/declare-direct-operator-application
-                      compile* operator-binding operand-forms state'' out-id))
-
-           (custom-cell-declarer? operator-binding state'')
-           (finish k ((:application/cell-declarer state'')
-                      compile* operator-binding operand-forms state'' out-id))
+           (fn? direct-installer)
+           (finish k
+                   (declarations/declare-direct-operator-application
+                    compile* operator-binding operand-forms state'' out-id))
 
            :else
            (cps/compile-args

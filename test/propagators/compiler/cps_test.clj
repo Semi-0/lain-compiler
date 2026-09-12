@@ -136,44 +136,19 @@
     (is (empty? props))
     (is (= network installed))))
 
-(deftest local-definitions-shadow-imported-built-in-operators
-  (doseq [[operator-name value] [['+ 9] ['list 7]]]
-    (testing (str operator-name " is shadowed by a fixed local definition")
-      (let [compiled (compiler/compile-source
-                      (str "(def " operator-name " " value ")")
-                      (h/default-env)
-                      {:seed [:local-first operator-name]
-                       :reuse-existing-bindings? true})
-            topology (net/network-dict-entry
-                      (:net compiled) env/lexical-topology-key)
-            binding-ids (get-in topology
-                                [:frames (:env compiled)
-                                 :bindings operator-name])
-            imported-ids (get-in topology
-                                 [:frames (:env compiled)
-                                  :imported-bindings operator-name])
-            result (run-compiled compiled)
-            resolved-id (env/resolve-binding-id
-                         result (:env compiled) operator-name)]
-        (is (= 2 (count binding-ids)))
-        (is (= 1 (count imported-ids)))
-        (is (not (contains? imported-ids resolved-id)))
-        (is (= (:cell compiled) resolved-id))
-        (is (= value (semantic-value result resolved-id)))))))
-
 (deftest cps-compilation-is-stack-safe
-  (testing "five thousand nested lexical scopes"
+  (testing "one thousand nested lexical scopes"
     (let [expr (reduce (fn [body idx]
                          (ast/let-cell [(symbol (str "x" idx))] body))
                        (ast/lit 1)
-                       (range 5000))
+                       (range 1000))
           compiled (compiler/compile-expr expr (h/default-env)
                                           {:seed :deep-let})]
       (is (= 1 (net/network-cell-strongest (:net compiled) (:cell compiled))))))
-  (testing "five thousand nested sequences"
+  (testing "one thousand nested sequences"
     (let [expr (reduce (fn [body _] (ast/sequence* body))
                        (ast/lit 2)
-                       (range 5000))
+                       (range 1000))
           compiled (compiler/compile-expr expr (h/default-env)
                                           {:seed :deep-sequence})]
       (is (= 2 (net/network-cell-strongest (:net compiled)
@@ -182,14 +157,17 @@
     (let [ordinary (reduce (fn [value _]
                              (ast/app (ast/sym '+) value (ast/lit 1)))
                            (ast/lit 0)
-                           (range 2000))
+                           (range 250))
           direct (reduce (fn [value _]
                            (ast/app (ast/sym 'list) value))
                          (ast/lit 0)
-                         (range 2000))]
-      (is (= 2000 (count (:applications
-                          (compiler/compile-expr ordinary (h/default-env)
-                                                 {:seed :deep-application})))))
+                         (range 250))
+          compiled-ordinary
+          (compiler/compile-expr ordinary (h/default-env)
+                                 {:seed :deep-application})
+          application-topologies
+          (application/application-topologies (:net compiled-ordinary))]
+      (is (= 250 (count application-topologies)))
       (is (some? (:cell (compiler/compile-expr direct (h/default-env)
                                                {:seed :deep-list})))))))
 

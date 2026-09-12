@@ -352,7 +352,7 @@
            (env/cell-binding callable-id)
            (mapv env/cell-binding application-args)
            state
-           (first private-outputs))
+           (peek private-outputs))
           gated (install-output-gates called candidate caller-contexts
                                       private-outputs caller-outputs)
           gated (if (and (seq private-outputs)
@@ -380,9 +380,10 @@
                             diagnostics)
           network (-> (:net gated)
                       (net/update-net-dict-entry
-                       calls-key assoc [call-id candidate-id]
-                       {:call-id call-id
+                      calls-key assoc [call-id candidate-id]
+                      {:call-id call-id
                         :candidate-id candidate-id
+                        :application-id (peek (:applications called))
                         :caller-signature (or caller-signature
                                               (:candidate/signature candidate))
                         :private-output-ids private-outputs

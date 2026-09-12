@@ -1,11 +1,11 @@
 (ns propagators.compiler.operators.call-graph
-  "Reactive call graphs derived from closure syntax and retained application IR."
+  "Reactive call graphs derived from closure syntax and connected topology."
   (:require [propagators.infra.cells.value :as value]
             [propagators.compiler.language.ast :as ast]
-            [propagators.compiler.model.application-value :as application-value]
             [propagators.compiler.model.closure-value :as closure-value]
             [propagators.compiler.model.env :as env]
             [propagators.compiler.model.operator-value :as operator-value]
+            [propagators.compiler.lowering.application :as application]
             [propagators.infra.datastructures.compound-object :as obj]
             [propagators.infra.ids :as ids]
             [propagators.infra.message :refer [message]]
@@ -105,68 +105,78 @@
    (call-sites (closure-value/closure-body closure-info))))
 
 (defn- realized-callee-label
-  [operator operator-expr]
-  (cond
-    (closure-value/closure-info? operator) (closure-label operator)
-    (operator-value/operator-closure? operator)
-    (str (or (obj/slot-value operator operator-value/name-slot)
-             (operator-label operator-expr)))
-    :else (operator-label operator-expr)))
+  [operator]
+  (let [declaration (application/callable-declaration operator)]
+    (cond
+      (closure-value/closure-info? declaration)
+      (closure-label declaration)
+
+      (operator-value/operator-closure? operator)
+      (str (or (operator-value/operator-name operator) :primitive))
+
+      :else
+      "callable")))
 
 (defn realized-call-graph
-  "Build one realized call fact from retained application IR."
-  [caller-id application-id application-info operator-id operator]
-  (let [operator-expr (obj/slot-value
-                       application-info
-                       application-value/application-operator-ast-slot)
-        call-label (operator-label operator-expr)
-        callee-label (if (= caller-id operator-id)
-                       "closure"
-                       (realized-callee-label operator operator-expr))]
+  "Build one realized call fact from connected application topology."
+  ([caller-id application-id operator-id operator]
+   (realized-call-graph caller-id application-id operator-id operator nil))
+  ([caller-id application-id operator-id operator call-label]
+   (let [callee-label (cond
+                        (= caller-id operator-id)
+                        "closure"
+
+                        :else
+                        (realized-callee-label operator))
+         application-label (cond
+                             (string? call-label)
+                             call-label
+
+                             :else
+                             callee-label)]
     (semantic-trace/graph-union
      {:nodes (assoc {caller-id "closure"
-                     application-id (str "call " call-label)}
+                     application-id (str "call " application-label)}
                     operator-id callee-label)
       :values {application-id {:call/status :realized
                                :call/application application-id
                                :call/operator operator-id}}
       :edges [[caller-id application-id]
-              [application-id operator-id]]})))
+              [application-id operator-id]]}))))
 
 (defn- application-call-messages
-  [caller-id application-id operator-id graph-id network]
-  (let [application-info (net/network-cell-strongest network application-id)
-        operator (net/network-cell-strongest network operator-id)]
-    (if (or (value/unusable? application-info)
-            (not (application-value/application-info? application-info))
-            (value/unusable? operator))
+  [caller-id application-id operator-id call-label graph-id network]
+  (let [operator (net/network-cell-strongest network operator-id)]
+    (if (value/unusable? operator)
       []
       [(message graph-id
-                (realized-call-graph caller-id application-id application-info
-                                     operator-id operator))])))
+                (realized-call-graph caller-id application-id
+                                     operator-id operator call-label))])))
 
 (defn p:application-call
-  "Publish one retained application into its caller's stable graph cell."
-  [caller-id application-id operator-id]
+  "Publish one connected application into its caller's stable graph cell."
+  [caller-id application-id operator-id call-label]
   (let [graph-id (graph-cell-id caller-id)]
     (fn [network]
       (let [network (reduce nb/ensure-cell network
-                            [caller-id application-id operator-id graph-id])
+                            [caller-id operator-id graph-id])
             [prop-id network]
             ((prop/construct-propagator
               (stable-node-id :application application-id :prop)
               :compiler-2/call-graph-application
               (fn [_inputs _outputs current-net]
                 (application-call-messages caller-id application-id operator-id
+                                           call-label
                                            graph-id current-net))
-              [application-id operator-id]
+              [operator-id]
               [graph-id])
              network)]
         [prop-id network]))))
 
 (defn- call-graph-messages
   [closure-id graph-id out-id network]
-  (let [closure-info (net/network-cell-strongest network closure-id)
+  (let [closure (net/network-cell-strongest network closure-id)
+        closure-info (application/callable-declaration closure)
         realized (net/network-cell-strongest network graph-id)]
     (if-not (closure-value/closure-info? closure-info)
       []

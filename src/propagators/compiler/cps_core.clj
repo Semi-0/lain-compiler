@@ -8,6 +8,7 @@
             [propagators.compiler.compiler.basis :as h]
             [propagators.compiler.language.parser :as parser]
             [propagators.compiler.model.env :as env]
+            [propagators.compiler.model.operator-value :as operator-value]
             [propagators.compiler.common.cps :as cps]
             [propagators.compiler.common.core :as common]
             [propagators.infra.ids :as ids]
@@ -35,8 +36,7 @@
    (cps/on predicates/def-net?
            (cps/transform-expr rewrite/def-net->def handlers/compile-def))
    (cps/on predicates/def-constraint?
-           (cps/transform-expr rewrite/def-constraint->def
-                               handlers/compile-def))
+           handlers/compile-def-constraint)
    (cps/on predicates/definition? handlers/compile-def)
    handlers/compile-application))
 
@@ -46,11 +46,18 @@
 
 (defn- prepare-environment
   [network seed compiler-env]
-  (if (ids/node-id? compiler-env)
-    [(h/ensure-cell network compiler-env) compiler-env]
-    (env/import-environment network
-                            (h/stable-node-id :compiler-2 :root-env seed)
-                            compiler-env)))
+  (cond
+    (ids/node-id? compiler-env)
+    {:net (h/ensure-cell network compiler-env)
+     :env-id compiler-env
+     :prop-ids []}
+
+    :else
+    (env/import-environment-topology
+     network
+     (h/stable-node-id :compiler-2 :root-env seed)
+     compiler-env
+     operator-value/canonical-callable)))
 
 (defn compile-expr
   ([expr] (compile-expr expr (h/default-env)))
@@ -60,18 +67,16 @@
                        :as opts}]
    (let [seed (or seed (ids/new-node-id))
          compile* (or compiler default-compiler)
-         [net env-id] (prepare-environment net seed compiler-env)
+         {:keys [net env-id prop-ids]}
+         (prepare-environment net seed compiler-env)
          [state result]
          (compile* {:net net
                     :env env-id
                     :seed seed
                     :path path
-                    :props []
+                    :props prop-ids
                     :applications []
                     :compiler compile*
-                    :application-installer (:application-installer opts)
-                    :application/cell-declarer
-                    (:application/cell-declarer opts)
                     :application/caller (:application/caller opts)
                     :block/premise-context (:block/premise-context opts)
                     :reuse-existing-bindings?

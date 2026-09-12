@@ -1,19 +1,17 @@
 # Compiler 2 layout
 
+- [Flat GUR and Compiler Application](flat-gur-compiler-application.md)
+  describes same-network application topology, live compound lexical scope,
+  named availability, and the extracted port provenance.
+
 - `cps_core.clj` — canonical stack-safe compiler assembly and public compile
   entrypoints.
 - `compiler/` — CPS predicates, handlers, declarations, dispatch, the default
   operator basis, and a deprecated `core` namespace shim.
 - `language/` — parser and AST representation.
-- `model/` — compiler environment and retained closure/application/operator
-  values.
-- `runtime/` — compiler execution and the reusable live runtime:
-  - delayed application, closure frames, retained/lexical application, and
-    lazy topology execution live at the root;
-  - `session/` owns state, commands, program compilation, and replay;
-  - `tui/` owns block state, version history, and versioned commits;
-  - `boundary/`, `inspection/`, `bridge/`, and `operators/` isolate their
-    respective runtime concerns.
+- `model/` — compiler environments and closure/application/operator values.
+- `lowering/` — flat-GUR application, recursive lexical access support, lazy
+  topology, and child-environment execution.
 - `operators/` — behavior, TMS, and reducer operator families.
 - `deprecated/` — retained synchronous compiler implementation and its old
   compatibility core.
@@ -23,11 +21,9 @@
 compiler entrypoint code should depend on `cps-core`; implementation code
 should depend on the responsibility-specific namespaces under `compiler/`.
 
-`propagators.runtime` is the public live-runtime façade. Servers,
-TUIs, dashboards, and other presentation or transport entrypoints stay under
-`graph`. `propagators.tui.graph.compiler-2-runtime` remains as a deprecated source
-compatibility façade; the existing semantic graph projector/REPL is still a
-graph-owned inspection dependency.
+The live runtime belongs to `lain-runtime-clojure`; TUI, server, dashboard, and
+presentation entrypoints belong to `wired`. This compiler repository depends
+only on `lain-infrastructure`.
 
 Current implementation status, unresolved correctness issues, and their
 dependency order are tracked in

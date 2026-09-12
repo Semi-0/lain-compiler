@@ -15,6 +15,7 @@
             [propagators.infra.datastructures.event :as event]
             [propagators.infra.datastructures.scope-source :as scope-source]
             [propagators.infra.datastructures.tms.distributed :as tms]
+            [propagators.infra.gur :as gur]
             [propagators.infra.ids :as ids]
             [propagators.infra.layered :as layered]
             [propagators.infra.message :refer [message]]
@@ -215,41 +216,104 @@
              (map-indexed vector operand-forms))]
         (declare-list state' element-bindings out-id)))}))
 
+(defn- concrete-copy-activation
+  [[source-id] [target-id] network]
+  [(message target-id (net/network-cell-content network source-id))])
+
+(defn- live-accessor-link-effects
+  [network slot-key value-id collection]
+  (vec
+   (mapcat
+    (fn [parent-id]
+      (cond
+        (= parent-id value-id)
+        []
+
+        (not (ids/node-id? parent-id))
+        []
+
+        (not (contains? (net/net-env network) parent-id))
+        []
+
+        :else
+        [(gur/declare-prop
+          (stable-node-id :compiler-2 :live-accessor-link
+                          slot-key parent-id value-id :inbound)
+          [parent-id]
+          [value-id]
+          (prop/concrete-propagator concrete-copy-activation))]))
+    (obj/accessor-parent-ids collection slot-key))))
+
+(defn- live-accessor-activation
+  [slot-key value-id collection-id]
+  (prop/concrete-propagator
+   (fn [_inputs _outputs network]
+     (let [collection
+           (-> network
+               (net/network-cell-strongest collection-id)
+               obj/as-accessor-network)]
+       (cond
+         (value/contradiction? collection)
+         []
+
+         :else
+         {:effects
+          (live-accessor-link-effects network slot-key value-id collection)})))))
+
+(defn- install-live-accessor
+  [network slot-key installer value-id collection-id result-id]
+  (let [[slot-prop with-slot]
+        ((installer value-id collection-id) network)
+        watcher-id
+        (stable-node-id :compiler-2 :live-accessor
+                        slot-key value-id collection-id)
+        [watcher-prop installed]
+        ((prop/construct-propagator
+          watcher-id
+          [:compiler-2/live-accessor slot-key]
+          (live-accessor-activation slot-key value-id collection-id)
+          [collection-id]
+          [])
+         with-slot)]
+    [installed [slot-prop watcher-prop] result-id]))
+
+(defn- accessor-plan
+  [name arg-ids out-id]
+  (let [arguments (vec arg-ids)]
+    (case (count arguments)
+      1 {:value-id out-id
+         :collection-id (first arguments)
+         :result-id out-id}
+      2 {:value-id (first arguments)
+         :collection-id (second arguments)
+         :result-id (second arguments)}
+      (throw
+       (ex-info (str name " expects collection or value+collection")
+                {:arg-ids arguments})))))
+
 (defn- accessor-operator
   [slot-key installer name]
-  (letfn [(plan [arg-ids out-id]
-            (let [arg-ids (vec arg-ids)
-                  [value-id collection-id result-id read?]
-                  (case (count arg-ids)
-                    1 [out-id (first arg-ids) out-id true]
-                    2 [(first arg-ids) (second arg-ids) (second arg-ids) false]
-                    (throw (ex-info (str name " expects collection or value+collection")
-                                    {:arg-ids arg-ids})))]
-              {:value-id value-id
-               :collection-id collection-id
-               :result-id result-id
-               :read? read?}))]
-    (operator-value/operator-closure
-     {:name name
-      :output-selector (fn [arg-ids fallback-id]
-                         (if (= 2 (count arg-ids))
-                           (second (vec arg-ids))
-                           fallback-id))
-      :install (fn [network arg-ids out-id]
-                 (let [{:keys [value-id collection-id result-id read?]}
-                       (plan arg-ids out-id)]
-                   (if read?
-                     (let [[cell-id prop-ids network']
-                           (obj/install-slot-access network
-                                                    slot-key
-                                                    collection-id
-                                                    value-id)]
-                       [network' prop-ids cell-id])
-                     (let [[id network'] ((installer value-id collection-id) network)]
-                       [network' [id] result-id]))))
-      :activate (fn [network _context-id arg-ids out-id]
-                  (let [{:keys [value-id collection-id]} (plan arg-ids out-id)]
-                    (slot-messages slot-key value-id collection-id network)))})))
+  (operator-value/operator-closure
+   {:name name
+    :output-selector
+    (fn [arg-ids fallback-id]
+      (cond
+        (= 2 (count arg-ids))
+        (second (vec arg-ids))
+
+        :else
+        fallback-id))
+    :install
+    (fn [network arg-ids out-id]
+      (let [{:keys [value-id collection-id result-id]}
+            (accessor-plan name arg-ids out-id)]
+        (install-live-accessor network slot-key installer
+                               value-id collection-id result-id)))
+    :activate
+    (fn [network _context-id arg-ids out-id]
+      (let [{:keys [value-id collection-id]}
+            (accessor-plan name arg-ids out-id)]
+        (slot-messages slot-key value-id collection-id network)))}))
 
 (defn- slot-key-messages
   [network slot-key-id value-id collection-id]
@@ -508,14 +572,17 @@
          network)))
     :install (fn [network arg-ids out-id]
                (let [[expr-id parent-env-id & watch-ids] (vec arg-ids)
-                     child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)]
-                 (((requiring-resolve 'propagators.compiler.lowering.application/p:execute-sub-env)
-                   parent-env-id
-                   expr-id
-                   watch-ids
-                   child-env-id
-                   out-id)
-                  network)))
+                     child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)
+                     [prop-id installed]
+                     (((requiring-resolve
+                        'propagators.compiler.lowering.application/p:execute-sub-env)
+                       parent-env-id
+                       expr-id
+                       watch-ids
+                       child-env-id
+                       out-id)
+                      network)]
+                 [installed [prop-id] out-id]))
     :activate (fn [network _context-id arg-ids out-id]
                 (let [[expr-id parent-env-id & _watch-ids] (vec arg-ids)
                       child-env-id (stable-node-id :compiler-2 :execute-sub-env out-id)]
