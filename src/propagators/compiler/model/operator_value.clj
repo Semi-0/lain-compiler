@@ -14,8 +14,7 @@
 (def install-slot :operator/install)
 (def static-installer-slot :operator/static-installer)
 (def compiler-activate-slot :operator/compiler-activate)
-(def direct-installer-slot :operator/direct-installer)
-(def direct-compiler-slot :operator/direct-compiler)
+(def compiler-operands-slot :operator/compiler-operands)
 (def activate-slot :operator/activate)
 (def output-selector-slot :operator/output-selector)
 (def contextual?-slot :operator/contextual?)
@@ -27,23 +26,19 @@
 
 (defn- assoc-when
   [m key candidate]
-  (cond
-    (some? candidate)
+  (if (some? candidate)
     (assoc m key candidate)
-
-    :else
     m))
 
 (defn- declaration
-  [{:keys [input-selector install static-installer direct-installer direct-compiler
+  [{:keys [input-selector install static-installer compiler-operands
            activate compiler-activate output-selector contextual? name]}]
   (-> {kind-slot operator-kind
        contextual?-slot (true? contextual?)}
       (assoc-when input-selector-slot input-selector)
       (assoc-when install-slot install)
       (assoc-when static-installer-slot static-installer)
-      (assoc-when direct-installer-slot direct-installer)
-      (assoc-when direct-compiler-slot direct-compiler)
+      (assoc-when compiler-operands-slot compiler-operands)
       (assoc-when activate-slot activate)
       (assoc-when compiler-activate-slot compiler-activate)
       (assoc-when output-selector-slot output-selector)
@@ -59,11 +54,8 @@
 (defn operator-compiler-activate [operator]
   (obj/slot-value (operator-declaration operator) compiler-activate-slot))
 
-(defn operator-direct-installer [operator]
-  (obj/slot-value (operator-declaration operator) direct-installer-slot))
-
-(defn operator-direct-compiler [operator]
-  (obj/slot-value (operator-declaration operator) direct-compiler-slot))
+(defn operator-compiler-operands [operator]
+  (obj/slot-value (operator-declaration operator) compiler-operands-slot))
 
 (defn operator-activate [operator]
   (obj/slot-value (operator-declaration operator) activate-slot))
@@ -98,11 +90,8 @@
 (defn operator-output-ids
   [operator arg-ids fallback-id]
   (let [select-output (operator-output-selector operator)]
-    (cond
-      (fn? select-output)
+    (if (fn? select-output)
       (output-ids (select-output arg-ids fallback-id))
-
-      :else
       [fallback-id])))
 
 (defn operator-output-id
@@ -136,11 +125,8 @@
           (operator-call operator arg-ids fallback-id context-id)
           prepared (reduce nb/ensure-cell network (concat inputs outputs))
           prepared
-          (cond
-            (fn? prepare-network)
+          (if (fn? prepare-network)
             (prepare-network prepared call)
-
-            :else
             prepared)
           [prop-id installed]
           ((prop/construct-propagator
@@ -156,8 +142,7 @@
   [operator application-installer]
   (let [install (operator-install operator)
         static-installer (operator-static-installer operator)
-        direct-installer (operator-direct-installer operator)
-        direct-compiler (operator-direct-compiler operator)
+        compiler-operands (operator-compiler-operands operator)
         activate (operator-activate operator)
         compiler-activate (operator-compiler-activate operator)]
     (cond
@@ -190,10 +175,10 @@
          (compiler-activate
           nil network (:context-id call) (:arg-ids call) (:out-id call))))
 
-      (or (fn? direct-installer) (fn? direct-compiler))
+      (fn? compiler-operands)
       (fn [_network arg-ids out-id _context-id]
         (throw
-         (ex-info "Direct compiler operator cannot be applied at runtime"
+         (ex-info "Compiler-operands operator cannot be applied at runtime"
                   {:operator (operator-name operator)
                    :argument-ids (vec arg-ids)
                    :result-id out-id})))

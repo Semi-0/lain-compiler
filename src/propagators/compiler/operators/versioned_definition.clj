@@ -347,11 +347,10 @@
                         #(reduce nb/ensure-cell %
                                  (concat private-outputs placeholder-ids)))
           [called _binding]
-          (declarations/declare-runtime-cell-application-bindings
-           compile*
+          (declarations/declare-application-topology
+           state
            (env/cell-binding callable-id)
            (mapv env/cell-binding application-args)
-           state
            (peek private-outputs))
           gated (install-output-gates called candidate caller-contexts
                                       private-outputs caller-outputs)

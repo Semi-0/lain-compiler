@@ -7,18 +7,16 @@
   closure application as the compatibility fallback.
   "
   (:require [clojure.set :as set]
-            [propagators.infra.boundary :as boundary]
-            [propagators.infra.cells.snapshot :refer [pop-inputs]]
             [propagators.infra.cells.value :as value]
             [propagators.compiler.model.application-value :as application-value]
             [propagators.compiler.model.closure-value :as closure-value]
             [propagators.compiler.model.env :as env]
             [propagators.compiler.compiler.basis :as h]
+            [propagators.compiler.lowering.topology-effects :as topology-effects]
             [propagators.infra.core :as core]
             [propagators.infra.datastructures.behavior :as behavior]
             [propagators.infra.datastructures.behavior-algebra :as hist]
             [propagators.infra.datastructures.compound-object :as obj]
-            [propagators.infra.helpers.task-queue :as tq]
             [propagators.infra.ids :as ids]
             [propagators.infra.message :refer [message]]
             [propagators.infra.network :as net]
@@ -65,22 +63,19 @@
       (mapv #(obj/slot-value arg-object %)
             (sort-by pr-str (obj/public-slot-keys arg-object))))))
 
-(defn- body-env
-  [lexical-env inputs output input-ids out-id]
-  (let [base-env (cond-> (env/sub-env lexical-env)
-                   output (env/bind-local output (env/cell-binding out-id)))]
-    (reduce
-     (fn [scoped-env [sym id]]
-       (env/bind-local scoped-env sym (env/cell-binding id)))
-     base-env
-     (map vector inputs input-ids))))
-
 (defn- compile-body
   [body body-env state]
   ((requiring-resolve 'propagators.compiler.behavior.core/g:compile)
    body
    body-env
    state))
+
+(defn- closure-topology-key
+  [closure-info]
+  [(closure-value/closure-env closure-info)
+   (closure-value/closure-inputs closure-info)
+   (closure-value/closure-output closure-info)
+   (closure-value/closure-body closure-info)])
 
 (defn- behavior-output-adapter
   [result-id out-inner]
@@ -95,16 +90,12 @@
 (defn- install-output-adapter
   [n result-id out-inner]
   (if (and result-id (not= result-id out-inner))
-    (let [[prop-id n'] ((behavior-output-adapter result-id out-inner) n)]
+    (let [prepared (-> n
+                       (nb/ensure-cell result-id)
+                       (nb/ensure-cell out-inner))
+          [prop-id n'] ((behavior-output-adapter result-id out-inner) prepared)]
       [n' [prop-id]])
     [n []]))
-
-(defn- run-activation-network
-  [n inner-inputs prop-ids]
-  (let [input-prop-ids (pop-inputs inner-inputs (net/net-graph n))
-        tasks (tq/enqueue-all tq/empty-queue
-                              (concat prop-ids input-prop-ids))]
-    (core/run-tasks tasks n)))
 
 (defn- run-closure-body
   [network closure-info arg-ids app-id]
@@ -113,37 +104,38 @@
         lexical-env (closure-value/closure-env closure-info)
         body (closure-value/closure-body closure-info)]
     (if (or (value/unusable? lexical-env)
+            (not (ids/node-id? lexical-env))
             (value/unusable? body)
             (not= (count inputs) (count arg-ids)))
       nil
-      (let [with-inputs (boundary/create-boundary-inputs network arg-ids)
-            inner-inputs (mapv (partial net/lookup-inner-in with-inputs)
-                               arg-ids)
-            out-inner (ids/new-node-id)
-            with-output (nb/install-cell with-inputs out-inner)
-            activation-env (body-env lexical-env
-                                     inputs
-                                     output
-                                     inner-inputs
-                                     out-inner)
+      (let [closure-key (closure-topology-key closure-info)
+            frame-id (h/stable-node-id :compiler-behavior :application
+                                       app-id closure-key arg-ids :frame)
+            out-inner (h/stable-node-id :compiler-behavior :application
+                                        app-id closure-key arg-ids :result)
+            bindings (cond-> (mapv (fn [sym id]
+                                     [sym (env/cell-binding id)])
+                                   inputs arg-ids)
+                       output (conj [output (env/cell-binding out-inner)]))
+            declared (env/declare-child network lexical-env frame-id bindings)
             [state' result] (compile-body
                              body
-                             activation-env
-                             {:net with-output
-                              :env activation-env
-                              :seed [:compiler-behavior/apply-closure app-id]
+                             frame-id
+                             {:net (:net declared)
+                              :env frame-id
+                              :seed [:compiler-behavior/apply-closure
+                                     app-id closure-key]
                               :path []
-                              :props []
+                              :props (:props declared)
                               :applications []})
             result-id (env/binding-id result)
             [activation-net adapter-props]
             (install-output-adapter (:net state') result-id out-inner)
-            after-body (run-activation-network activation-net
-                                               inner-inputs
-                                               (into (:props state')
-                                                     adapter-props))]
+            props (into (:props state') adapter-props)
+            after-body (nb/run-propagators activation-net props)]
         {:net after-body
-         :out-inner out-inner}))))
+         :out-inner out-inner
+         :props props}))))
 
 (defn- tagged-source-keys
   [tag view]
@@ -189,24 +181,27 @@
       slices)))
 
 (defn- install-arg-view-cells
-  [network arg-views]
+  [network app-id record-key arg-views]
   (reduce
-   (fn [{:keys [net arg-ids]} arg-view]
-     (let [arg-id (ids/new-node-id)]
+   (fn [{:keys [net arg-ids]} [position arg-view]]
+     (let [arg-id (h/stable-node-id :compiler-behavior :application
+                                    app-id record-key :argument position)]
        {:net (nb/install-cell net
                               arg-id
                               arg-view
                               (behavior/strongest-value arg-view))
         :arg-ids (conj arg-ids arg-id)}))
    {:net network :arg-ids []}
-   arg-views))
+   (map-indexed vector arg-views)))
 
 (defn- run-closure-body-view
-  [network closure-info arg-views app-id]
-  (let [{:keys [net arg-ids]} (install-arg-view-cells network arg-views)
-        {:keys [net out-inner]} (run-closure-body net closure-info arg-ids app-id)]
-    (when out-inner
-      (behavior-view-or-nothing net out-inner))))
+  [network closure-info arg-views app-id record-key]
+  (let [{:keys [net arg-ids]}
+        (install-arg-view-cells network app-id record-key arg-views)
+        applied (run-closure-body net closure-info arg-ids [app-id record-key])]
+    (when applied
+      (assoc applied :view (behavior-view-or-nothing (:net applied)
+                                                     (:out-inner applied))))))
 
 (defn- combined-body-view
   [body-views]
@@ -218,20 +213,29 @@
 
 (defn- closure-history-body-view
   [network operator-view arg-views app-id]
-  (let [body-views
-        (keep (fn [closure-record]
-                (let [closure-info (hist/record-value closure-record)
-                      arg-slices (closure-slice-arg-views closure-record
-                                                          arg-views)]
-                  (when (and (closure-value/closure-info? closure-info)
-                             arg-slices)
-                    (run-closure-body-view network
-                                           closure-info
-                                           arg-slices
-                                           app-id))))
-              (behavior/history-records operator-view))]
-    (when (seq body-views)
-      (combined-body-view body-views))))
+  (let [{:keys [net views props]}
+        (reduce
+         (fn [{:keys [net views props]} [position closure-record]]
+           (let [closure-info (hist/record-value closure-record)
+                 arg-slices (closure-slice-arg-views closure-record arg-views)
+                 applied (when (and (closure-value/closure-info? closure-info)
+                                    arg-slices)
+                           (run-closure-body-view net closure-info arg-slices
+                                                  app-id position))]
+             (cond
+               (and applied (not (value/unusable? (:view applied))))
+               {:net (:net applied)
+                :views (conj views (:view applied))
+                :props (into props (:props applied))}
+
+               :else
+               {:net net :views views :props props})))
+         {:net network :views [] :props []}
+         (map-indexed vector (behavior/history-records operator-view)))]
+    (when (seq views)
+      {:net net
+       :props props
+       :view (combined-body-view views)})))
 
 (defn- closure-behavior-messages
   [app-id operator-id args-id out-id network]
@@ -248,22 +252,27 @@
             (value/unusable? arg-object)
             (some value/unusable? arg-views))
       []
-      (let [{:keys [net out-inner]} (run-closure-body network
-                                                      closure-info
-                                                      (vec arg-ids)
-                                                      app-id)
-            body-view (or (closure-history-body-view network
-                                                     operator-view
-                                                     arg-views
-                                                     app-id)
-                          (when out-inner
-                            (behavior-view-or-nothing net out-inner)))]
+      (let [history (closure-history-body-view network
+                                               operator-view arg-views app-id)
+            history-view (:view history)
+            base (when (or (nil? history-view)
+                           (value/unusable? history-view))
+                   (run-closure-body network closure-info (vec arg-ids) app-id))
+            body-view (or history-view
+                          (when (:out-inner base)
+                            (behavior-view-or-nothing (:net base)
+                                                      (:out-inner base))))
+            final-net (or (:net history) (:net base) network)
+            props (into (vec (:props history)) (:props base))]
         (if (value/unusable? body-view)
           []
-          [(message out-id
-                    (application-output-value app-id
-                                              operator-view
-                                              body-view))])))))
+          (update (topology-effects/network-diff network final-net props)
+                  :messages
+                  conj
+                  (message out-id
+                           (application-output-value app-id
+                                                     operator-view
+                                                     body-view))))))))
 
 (defn- primitive-application-messages
   [operator context-id arg-ids out-id network]

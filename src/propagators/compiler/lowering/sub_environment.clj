@@ -4,7 +4,6 @@
             [propagators.compiler.compiler.basis :as h]
             [propagators.compiler.compiler.dispatch :as dispatch]
             [propagators.compiler.model.env :as env]
-            [propagators.compiler.model.operator-value :as operator-value]
             [propagators.compiler.lowering.activation :as activation]
             [propagators.compiler.lowering.topology-effects :as topology-effects]
             [propagators.infra.ids :as ids]
@@ -21,19 +20,9 @@
     value/nothing))
 
 (defn- declare-child-environment
-  [network parent-env-id parent-env child-env-id]
-  (let [runtime-parent-id (h/stable-node-id :compiler-2
-                                            :execute-sub-env
-                                            parent-env-id
-                                            child-env-id
-                                            :parent)
-        {:keys [net prop-ids]}
-        (env/import-environment-topology network runtime-parent-id parent-env
-                                         operator-value/canonical-callable)
-        [scope-props declared]
-        ((env/p:scope-frame runtime-parent-id child-env-id)
-         (h/ensure-cell net child-env-id))]
-    [(into (vec prop-ids) scope-props) declared]))
+  [network parent-env-id child-env-id]
+  (let [declared (env/declare-child network parent-env-id child-env-id [])]
+    [(:props declared) (:net declared)]))
 
 (defn- compile-expr
   [compile* expr child-env network seed props]
@@ -67,13 +56,11 @@
 
 (defn execute-sub-env-messages-with
   [compile* parent-env-id expr-id child-env-id out-id network]
-  (let [expr (h/strongest-or-nothing network expr-id)
-        parent-env (h/strongest-or-nothing network parent-env-id)]
-    (if (or (value/unusable? expr)
-            (value/unusable? parent-env))
+  (let [expr (h/strongest-or-nothing network expr-id)]
+    (if (value/unusable? expr)
       []
       (let [[env-props with-child]
-            (declare-child-environment network parent-env-id parent-env child-env-id)
+            (declare-child-environment network parent-env-id child-env-id)
             [state result]
             (compile-expr compile* expr child-env-id with-child
                           [:compiler-2/execute-sub-env
@@ -104,7 +91,7 @@
 (defn p:execute-sub-env-with
   [compile* parent-env-id expr-id watch-ids child-env-id out-id]
   (let [watch-ids (vec watch-ids)
-        inputs (into [parent-env-id expr-id] watch-ids)
+        inputs (into [expr-id] watch-ids)
         outputs [child-env-id out-id]
         activate (fn [_inputs _outputs network]
                    (execute-sub-env-messages-with compile*

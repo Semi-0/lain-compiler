@@ -29,6 +29,12 @@
         (core/eval-cell id (message id candidate) network)]
     (core/run-tasks tasks seeded)))
 
+(defn- live-root
+  [network bindings]
+  (env/declare-root network
+                    (ids/new-node-id)
+                    (into (vec (basis/default-bindings)) bindings)))
+
 (deftest closure-builds-flat-frame-in-active-network
   (let [compiled (compiler/compile-source "((:: [x] (+ x 1)) 4)")
         result (run-compiled compiled)
@@ -40,13 +46,11 @@
 (deftest captured-parent-binding-arrives-late
   (let [bias-id (ids/new-node-id)
         initial (nb/install-cell net/empty-net bias-id)
-        compiler-env (env/bind (basis/default-env)
-                               'bias
-                               (env/cell-binding bias-id)
-                               0)
+        root (live-root initial [['bias (env/cell-binding bias-id)]])
         compiled (compiler/compile-source "((:: [x] (+ x bias)) 5)"
-                                          compiler-env
-                                          {:net initial})
+                                          (:env root)
+                                          {:net (:net root)
+                                           :environment-props (:props root)})
         waiting (run-compiled compiled)
         complete (seed-and-run waiting bias-id 4)]
     (is (= :bool4/nothing (strongest waiting (:cell compiled))))
@@ -58,12 +62,13 @@
         initial (-> net/empty-net
                     (nb/install-cell outer-x-id 100 100)
                     (nb/install-cell input-id))
-        compiler-env (-> (basis/default-env)
-                         (env/bind 'x (env/cell-binding outer-x-id) 0)
-                         (env/bind 'input (env/cell-binding input-id) 0))
+        root (live-root initial
+                        [['x (env/cell-binding outer-x-id)]
+                         ['input (env/cell-binding input-id)]])
         compiled (compiler/compile-source "((:: [x] (+ x 1)) input)"
-                                          compiler-env
-                                          {:net initial})
+                                          (:env root)
+                                          {:net (:net root)
+                                           :environment-props (:props root)})
         waiting (run-compiled compiled)
         complete (seed-and-run waiting input-id 5)]
     (is (= :bool4/nothing (strongest waiting (:cell compiled))))

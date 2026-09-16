@@ -3,7 +3,6 @@
   (:require [propagators.compiler.operators.behavior :as behavior]
             [propagators.compiler.model.closure-value :as closure-value]
             [propagators.compiler.cps-core :as compiler]
-            [propagators.compiler.deprecated.core :as core]
             [propagators.compiler.language.parser :as parser]))
 
 (def compiler-result-key compiler/compiler-result-key)
@@ -16,10 +15,6 @@
 (def closure-inputs-slot closure-value/closure-inputs-slot)
 (def closure-output-slot closure-value/closure-output-slot)
 (def closure-scope-slot closure-value/closure-scope-slot)
-
-(def g:compile core/g:compile)
-(def g:apply core/g:apply)
-(def g:advance core/g:advance)
 
 (def compiler-dispatch compiler/compiler-dispatch)
 (def compile* compiler/compile*)
@@ -35,12 +30,13 @@
   ([source env] (compiler/compile-source source env))
   ([source env opts] (compiler/compile-source source env opts)))
 
-(defn behavior-tms-env []
-  (behavior/behavior-tms-env))
+(defn behavior-tms-bindings []
+  (behavior/behavior-tms-bindings))
 
 (defn compile-expr-with-behavior-tms
   ([expr] (compile-expr-with-behavior-tms expr {}))
-  ([expr opts] (compiler/compile-expr expr (behavior-tms-env) opts)))
+  ([expr opts]
+   (compiler/compile-expr-with-bindings expr (behavior-tms-bindings) opts)))
 
 (defn compile-source-with-behavior-tms
   ([source] (compile-source-with-behavior-tms source {}))

@@ -1,14 +1,14 @@
 (ns propagators.compiler.composition-test
   (:require [clojure.test :refer [deftest is testing]]
             [propagators.compiler.lowering.application :as application]
+            [propagators.compiler.compiler.declarations :as declarations]
             [propagators.compiler.language.ast :as ast]
+            [propagators.compiler.language.parser :as parser]
             [propagators.compiler.cps-core :as cps-core]
-            [propagators.compiler.deprecated.core :as compiler-core]
             [propagators.compiler.compiler.dispatch :as compiler-dispatch]
             [propagators.compiler.model.env :as env]
             [propagators.compiler.compiler.basis :as h]
             [propagators.compiler.main :as compiler]
-            [propagators.compiler.predicate-core :as predicate-core]
             [propagators.compiler.behavior.core :as behavior-core]
             [propagators.compiler.behavior.main :as behavior-compiler]
             [propagators.compiler.common.cps :as cps]
@@ -52,13 +52,9 @@
 
       :else v)))
 
-(deftest public-multifn-identity-is-preserved
-  (is (instance? clojure.lang.MultiFn compiler/g:compile))
-  (is (instance? clojure.lang.MultiFn compiler/g:apply))
-  (is (instance? clojure.lang.MultiFn compiler/g:advance))
-  (is (identical? compiler/g:compile compiler-core/g:compile))
-  (is (identical? compiler/g:apply compiler-core/g:apply))
-  (is (identical? compiler/g:advance compiler-core/g:advance))
+(deftest active-compiler-entry-points-are-preserved
+  (is (identical? compiler/default-compiler cps-core/default-compiler))
+  (is (identical? cps-core/compile* cps-core/default-compiler))
   (is (identical? behavior-compiler/g:compile behavior-core/g:compile))
   (is (identical? behavior-compiler/g:apply behavior-core/g:apply))
   (is (identical? behavior-compiler/g:advance behavior-core/g:advance)))
@@ -73,8 +69,10 @@
       (is (= 5 (semantic-value result-net (:cell compiled))))))
   (let [source "(let [x 1] (+ x 2))"
         seed :cps-core-parity
-        via-main (compiler/compile-source source (h/default-env) {:seed seed})
-        direct (predicate-core/compile-source source (h/default-env) {:seed seed})
+        via-main (compiler/compile-source source)
+        direct (cps-core/compile-expr-with-bindings
+                (parser/parse-string source) (h/default-bindings)
+                {:seed seed})
         direct-net (run-compiled direct)
         main-net (run-compiled via-main)]
     (is (= (strongest direct-net (:cell direct))
@@ -94,37 +92,41 @@
                              (cps/call compile-k state (ast/lit 99) k)))
                 cps-core/compiler-dispatch))
         expr (ast/sequence* (custom-expr 1) (custom-expr 2))
-        left-result (compiler/compile-expr expr (h/default-env)
-                                           {:compiler left})
-        right-result (compiler/compile-expr expr (h/default-env)
-                                            {:compiler right})]
+        left-result (cps-core/compile-expr-with-bindings
+                     expr (h/default-bindings) {:compiler left})
+        right-result (cps-core/compile-expr-with-bindings
+                      expr (h/default-bindings) {:compiler right})]
     (is (= 2 @left-calls))
     (is (= 2 @right-calls))
     (is (= 2 (strongest (:net left-result) (:cell left-result))))
     (is (= 99 (strongest (:net right-result) (:cell right-result)))))
   (let [calls (atom 0)
         compile* (compiler-with-custom calls)
-        compiled (compiler/compile-expr
+        compiled (cps-core/compile-expr-with-bindings
                   (ast/let* [['x (ast/lit 1)]] (custom-expr 8))
-                  (h/default-env)
+                  (h/default-bindings)
                   {:compiler compile*})]
     (is (= 1 @calls))
     (is (= 8 (strongest (:net compiled) (:cell compiled))))))
 
-(deftest compatibility-adapter-makes-explicit-env-authoritative
+(deftest explicit-live-env-is-authoritative
   (let [left-id (ids/new-node-id)
         right-id (ids/new-node-id)
-        left-env (env/bind-local (h/default-env) 'x (env/cell-binding left-id))
-        right-env (env/bind-local (h/default-env) 'x (env/cell-binding right-id))
-        [_ binding] (compiler/g:compile
-                     (ast/sym 'x)
-                     left-env
-                     {:net net/empty-net
-                      :env right-env
-                      :seed :compatibility-env
+        left-env (ids/new-node-id)
+        right-env (ids/new-node-id)
+        left (env/declare-root net/empty-net left-env
+                               [['x (env/cell-binding left-id)]])
+        right (env/declare-root (:net left) right-env
+                                [['x (env/cell-binding right-id)]])
+        [_ binding] (cps-core/default-compiler
+                     {:net (:net right)
+                      :env left-env
+                      :seed :explicit-live-env
                       :path []
                       :props []
-                      :applications []})]
+                      :applications []
+                      :compiler cps-core/default-compiler}
+                     (ast/sym 'x))]
     (is (= left-id (env/binding-id binding)))))
 
 (deftest selected-compiler-survives-delayed-compilation
@@ -132,17 +134,17 @@
     (let [calls (atom 0)
           compile* (compiler-with-custom calls)
           expr (ast/app (ast/network [] (custom-expr 41)))
-          compiled (compiler/compile-expr expr (h/default-env)
-                                          {:compiler compile*})
+          compiled (cps-core/compile-expr-with-bindings
+                    expr (h/default-bindings) {:compiler compile*})
           result-net (run-compiled compiled)]
       (is (= 1 @calls))
       (is (= 41 (semantic-value result-net (:cell compiled))))))
   (testing "lazy topology"
     (let [calls (atom 0)
           compile* (compiler-with-custom calls)
-          compiled (compiler/compile-expr
+          compiled (cps-core/compile-expr-with-bindings
                     (ast/when-topology (ast/lit true) (custom-expr 7))
-                    (h/default-env)
+                    (h/default-bindings)
                     {:compiler compile*})]
       (is (zero? @calls))
       (run-compiled compiled)
@@ -150,9 +152,9 @@
   (testing "direct list operands"
     (let [calls (atom 0)
           compile* (compiler-with-custom calls)]
-      (compiler/compile-expr (ast/app (ast/sym 'list) (custom-expr 3))
-                             (h/default-env)
-                             {:compiler compile*})
+      (cps-core/compile-expr-with-bindings
+       (ast/app (ast/sym 'list) (custom-expr 3))
+       (h/default-bindings) {:compiler compile*})
       (is (= 1 @calls))))
   (testing "sub-environment execution"
     (let [calls (atom 0)
@@ -161,31 +163,32 @@
           expr-id (ids/new-node-id)
           child-id (ids/new-node-id)
           out-id (ids/new-node-id)
-          network (-> net/empty-net
-                      (nb/install-cell parent-id)
+          declared (env/declare-root net/empty-net parent-id
+                                     (h/default-bindings))
+          network (-> (:net declared)
                       (nb/install-cell expr-id)
                       (nb/install-cell child-id)
                       (nb/install-cell out-id)
-                      (nb/seed-cell parent-id (h/default-env))
                       (nb/seed-cell expr-id (custom-expr 17)))
+          rooted (nb/run-propagators network (:props declared))
           [prop-id installed]
           ((application/p:execute-sub-env-with compile* parent-id expr-id []
                                                 child-id out-id)
-           network)
+           rooted)
           result-net (nb/run-propagators installed [prop-id])]
       (is (= 1 @calls))
       (is (= 17 (strongest result-net out-id))))))
 
 (deftest lowering-and-closure-output-normalization-are-pure
-  (let [lowered (compiler-core/lower-let
+  (let [lowered (declarations/lower-let
                  (ast/let* [['x (ast/lit 1)]] (ast/sym 'x)))]
     (is (= :let-cell (ast/type lowered)))
     (is (= '[x] (ast/names lowered)))
     (is (= :sequence (ast/type (ast/body lowered)))))
   (let [body (ast/sequence* (ast/lit 1) (ast/lit 2))
-        implicit (compiler-core/normalize-closure-output 'return nil body)
-        explicit (compiler-core/normalize-closure-output 'ignored 'out body)
-        multiple (compiler-core/normalize-closure-output 'ignored '[a b] body)]
+        implicit (declarations/normalize-closure-output 'return nil body)
+        explicit (declarations/normalize-closure-output 'ignored 'out body)
+        multiple (declarations/normalize-closure-output 'ignored '[a b] body)]
     (is (= '[return] (:output implicit)))
     (is (= 'out (:output explicit)))
     (is (= '[a b] (:output multiple)))
@@ -194,14 +197,12 @@
 
 (deftest runtime-cell-application-is-canonical-flat-gur
   (let [operator-id (ids/new-node-id)
-        network (nb/install-cell net/empty-net operator-id)
-        compiler-env (env/bind-local (h/default-env)
-                                     'later
-                                     (env/cell-binding operator-id))]
+        network (nb/install-cell net/empty-net operator-id)]
     (let [compiled
-          (compiler/compile-expr
+          (cps-core/compile-expr-with-bindings
            (ast/app (ast/sym 'later))
-           compiler-env
+           (conj (vec (h/default-bindings))
+                 ['later (env/cell-binding operator-id)])
            {:net network})
           applications (application/application-topologies (:net compiled))
           application-id (:application-id (first applications))
@@ -213,7 +214,7 @@
 (deftest behavior-compiler-reuses-composed-traversal-with-own-values
   (let [behavior-result (behavior-compiler/compile-expr
                          (ast/sequence* (ast/lit 1))
-                         (h/behavior-env)
+                         (h/behavior-bindings)
                          {:timestamp 7
                           :compiler behavior-core/default-compiler})
         current-result (compiler/compile-expr (ast/sequence* (ast/lit 1)))

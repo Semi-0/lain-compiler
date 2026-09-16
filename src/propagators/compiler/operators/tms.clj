@@ -385,17 +385,13 @@
                       [out-id] outputs]
                   (premise-state-messages active? network premise-id epoch-id out-id)))}))
 
-(defn bind-distributed-tms-operators
-  [compiler-env]
-  (-> compiler-env
-      (env/bind-at 'tms-closure (tms-closure-operator) 0)
-      (env/bind-at 'premise-closure
-                   (distributed-premise-closure-operator)
-                   0)
-      (env/bind-at 'distributed-premise-closure
-                   (distributed-premise-closure-operator)
-                   0)
-      (env/bind-at 'premise-input (premise-input-operator) 0)
-      (env/bind-at 'premise-content-input (premise-content-input-operator) 0)
-      (env/bind-at 'premise-believe (premise-state-operator true "premise-believe") 0)
-      (env/bind-at 'premise-retract (premise-state-operator false "premise-retract") 0)))
+(defn add-distributed-tms-bindings
+  [bindings]
+  (into (vec bindings)
+        [['tms-closure (tms-closure-operator)]
+         ['premise-closure (distributed-premise-closure-operator)]
+         ['distributed-premise-closure (distributed-premise-closure-operator)]
+         ['premise-input (premise-input-operator)]
+         ['premise-content-input (premise-content-input-operator)]
+         ['premise-believe (premise-state-operator true "premise-believe")]
+         ['premise-retract (premise-state-operator false "premise-retract")]]))

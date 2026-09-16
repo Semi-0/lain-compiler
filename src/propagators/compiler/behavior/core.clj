@@ -175,7 +175,7 @@
 (defn- compile-network
   [state inputs output body]
   (let [lexical-env (:env state)
-        lexical-scope (env/scope-id lexical-env)
+        lexical-scope lexical-env
         closure-object (closure-value/closure-object lexical-env
                                                       body
                                                       inputs
@@ -249,18 +249,39 @@
 
 (defn compile-expr
   "Compile AST data into a behavior-valued network and result cell."
-  ([expr] (compile-expr expr (h/behavior-env)))
+  ([expr]
+   (let [seed (ids/new-node-id)
+         env-id (h/stable-node-id :compiler-behavior :root-env seed)
+         declared (env/declare-root net/empty-net env-id (h/behavior-bindings))]
+     (compile-expr expr env-id {:net (:net declared)
+                                :seed seed
+                                :environment-props (:props declared)})))
   ([expr env] (compile-expr expr env {}))
-  ([expr env {:keys [net seed path timestamp compiler]
+  ([expr env {:keys [net seed path timestamp compiler environment-props]
               :or {net net/empty-net path [] timestamp 0}}]
    (let [seed (or seed (ids/new-node-id))
+         declaration? (and (sequential? env) (every? sequential? env))
+         declared (when declaration?
+                    (env/declare-root net
+                                      (h/stable-node-id
+                                       :compiler-behavior :root-env seed)
+                                      env))
+         net (if declaration? (:net declared) net)
+         environment-id (if declaration? (:env declared) env)
+         environment-props (if declaration?
+                             (:props declared)
+                             environment-props)
+         _ (when-not (ids/node-id? environment-id)
+             (throw (ex-info
+                     "Behavior compiler environment must be a live environment cell or binding declaration"
+                     {:environment env})))
          compile* (or compiler default-compiler)
          [state result] (compile* {:net net
-                                   :env env
+                                   :env environment-id
                                    :seed seed
                                    :path path
                                    :timestamp timestamp
-                                   :props []
+                                   :props (vec environment-props)
                                    :applications []}
                                   expr)]
      (common/compiled-map state result))))
@@ -290,12 +311,11 @@
    (prop/concrete-propagator
     (fn [_inputs _outputs network]
      (let [expr (net/network-cell-strongest network expr-id)
-           env (net/network-cell-strongest network env-id)]
-       (let [compiled (compile-expr expr
-                                    env
-                                    {:net network
-                                     :seed [:compile-behavior expr-id env-id]
-                                     :timestamp 0})]
-         [(message out-id (:net compiled))]))))
-   [expr-id env-id]
+           compiled (compile-expr expr
+                                  env-id
+                                  {:net network
+                                   :seed [:compile-behavior expr-id env-id]
+                                   :timestamp 0})]
+       [(message out-id (:net compiled))])))
+   [expr-id]
    [out-id]))

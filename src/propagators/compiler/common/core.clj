@@ -66,10 +66,35 @@
      (map-indexed vector forms))))
 
 (defn compile-symbol [{:keys [env] :as state} sym]
-  (if-let [value (env/lookup env sym)]
-    [state value]
-    (let [[state' binding] (h/new-cell state [:symbol sym])]
-      [(assoc state' :env (env/bind-local env sym binding)) binding])))
+  (let [{:keys [status binding/id]}
+        (env/lexical-binding-status (:net state) sym env)]
+    (case status
+      :found
+      [state (env/cell-binding id)]
+
+      :missing
+      (let [[state' binding] (h/new-cell state [:symbol sym])
+            binding-id (env/binding-id binding)
+            [props declared]
+            ((env/p:declare-canonical-local sym env binding-id) (:net state'))]
+        [(-> state'
+             (assoc :net declared)
+             (h/add-props props))
+         binding])
+
+      (let [binding-id (h/node-id state [:symbol sym :binding])
+            value-id (h/node-id state [:symbol sym :value])
+            prepared (-> (:net state)
+                         (h/ensure-cell binding-id)
+                         (h/ensure-cell value-id))
+            [access-props accessed]
+            ((env/p:lexical-access-local-first sym env binding-id) prepared)
+            [value-props resolved]
+            ((env/p:binding-value binding-id value-id) accessed)]
+        [(-> state
+             (assoc :net resolved)
+             (h/add-props (into (vec access-props) value-props)))
+         (env/cell-binding value-id)]))))
 
 (defn compile-args [compile-f state args]
   (let [base-path (:path state)]
@@ -169,19 +194,23 @@
 (defn declare-let-cell-scope
   [state names]
   (let [base-path (:path state)
-        child-env (env/sub-env (:env state))
-        [state' scoped-env]
+        parent-env (:env state)
+        child-env (h/node-id state :let-environment)
+        [state' bindings]
         (reduce
-         (fn [[state scoped-env] [idx name]]
+         (fn [[state bindings] [idx name]]
            (let [[state' binding] (h/new-cell (h/child
                                                (with-path state base-path)
                                                [:let-cell idx name])
                                               :cell)]
-             [(with-path state' base-path)
-              (env/bind-local scoped-env name binding)]))
-         [state child-env]
-         (map-indexed vector names))]
-    [(h/child (assoc state' :env scoped-env) :body) scoped-env]))
+             [(with-path state' base-path) (conj bindings [name binding])]))
+         [state []]
+         (map-indexed vector names))
+        declared (env/declare-child (:net state') parent-env child-env bindings)
+        body-state (-> state'
+                       (assoc :net (:net declared) :env child-env)
+                       (h/add-props (:props declared)))]
+    [(h/child body-state :body) child-env]))
 
 (defn compile-let-cell [compile-f state names body]
   (let [[body-state _scoped-env] (declare-let-cell-scope state names)]

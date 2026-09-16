@@ -10,11 +10,11 @@
 (def operator-slot :context/operator)
 
 (defn context-value
-  [lexical-env application operator]
+  [environment-id application operator]
   (obj/compound-object
-   {env-slot lexical-env
-    scope-slot (env/scope-id lexical-env)
-    chain-slot (env/scope-chain lexical-env)
+   {env-slot environment-id
+    scope-slot environment-id
+    chain-slot [environment-id]
     application-slot application
     operator-slot operator}))
 
@@ -40,4 +40,3 @@
    :context/chain (chain context)
    :context/application (application context)
    :context/operator (operator context)})
-

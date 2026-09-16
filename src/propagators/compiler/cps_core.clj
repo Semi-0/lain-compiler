@@ -8,7 +8,6 @@
             [propagators.compiler.compiler.basis :as h]
             [propagators.compiler.language.parser :as parser]
             [propagators.compiler.model.env :as env]
-            [propagators.compiler.model.operator-value :as operator-value]
             [propagators.compiler.common.cps :as cps]
             [propagators.compiler.common.core :as common]
             [propagators.infra.ids :as ids]
@@ -44,31 +43,45 @@
                (cps/make-compiler compiler-dispatch)))
 (def default-compiler compile*)
 
+(declare compile-expr)
+
 (defn- prepare-environment
-  [network seed compiler-env]
+  [network compiler-env prop-ids]
   (cond
     (ids/node-id? compiler-env)
     {:net (h/ensure-cell network compiler-env)
      :env-id compiler-env
-     :prop-ids []}
+     :prop-ids (vec prop-ids)}
 
     :else
-    (env/import-environment-topology
-     network
-     (h/stable-node-id :compiler-2 :root-env seed)
-     compiler-env
-     operator-value/canonical-callable)))
+    (throw
+     (ex-info "Compiler environment must be a live environment cell"
+              {:environment compiler-env}))))
+
+(defn compile-expr-with-bindings
+  ([expr bindings]
+   (compile-expr-with-bindings expr bindings {}))
+  ([expr bindings {:keys [net seed] :or {net net/empty-net} :as opts}]
+   (let [seed (or seed (ids/new-node-id))
+         env-id (h/stable-node-id :compiler-2 :root-env seed)
+         declared (env/declare-root net env-id bindings)]
+     (compile-expr expr
+                   env-id
+                   (assoc opts
+                          :net (:net declared)
+                          :seed seed
+                          :environment-props (:props declared))))))
 
 (defn compile-expr
-  ([expr] (compile-expr expr (h/default-env)))
+  ([expr] (compile-expr-with-bindings expr (h/default-bindings)))
   ([expr compiler-env] (compile-expr expr compiler-env {}))
-  ([expr compiler-env {:keys [net seed path compiler]
+  ([expr compiler-env {:keys [net seed path compiler environment-props]
                        :or {net net/empty-net path []}
                        :as opts}]
    (let [seed (or seed (ids/new-node-id))
          compile* (or compiler default-compiler)
          {:keys [net env-id prop-ids]}
-         (prepare-environment net seed compiler-env)
+         (prepare-environment net compiler-env environment-props)
          [state result]
          (compile* {:net net
                     :env env-id
@@ -106,12 +119,11 @@
    (prop/concrete-propagator
     (fn [_inputs _outputs network]
       (let [expr (net/network-cell-strongest network expr-id)
-            compiler-env (net/network-cell-strongest network env-id)
-            compiled (compile-expr expr compiler-env
+            compiled (compile-expr expr env-id
                                    {:net network
                                     :seed [:compile-2 expr-id env-id]})]
         [(message out-id (:net compiled))])))
-   [expr-id env-id]
+   [expr-id]
    [out-id]))
 
 (defn p:execute-sub-env

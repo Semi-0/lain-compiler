@@ -423,54 +423,45 @@
 (def history-drop-operator behavior-history/history-drop-operator)
 (def history-split-at-operator behavior-history/history-split-at-operator)
 
-(defn bind-behavior-construction-operators
-  [compiler-env]
-  (-> compiler-env
-      (env/bind-at 'behavior-point (behavior-point-operator) 0)
-      (env/bind-at 'behavior-event (behavior-event-operator) 0)
-      (env/bind-at 'behavior-empty-state (behavior-empty-state-operator) 0)
-      (env/bind-at 'behavior-add-event (behavior-add-event-operator) 0)
-      (env/bind-at 'behavior-state-events (behavior-state-events-operator) 0)
-      (env/bind-at 'behavior-update-tick
-                   (behavior-update-field-operator :tick "behavior-update-tick")
-                   0)
-      (env/bind-at 'behavior-update-value
-                   (behavior-update-field-operator :value "behavior-update-value")
-                   0)
-      (env/bind-at 'behavior-assoc-event (behavior-assoc-event-operator) 0)
-      (env/bind-at 'behavior-state-from-events
-                   (behavior-state-from-events-operator)
-                   0)
-      (env/bind-at 'behavior-retain-last (behavior-retain-last-operator) 0)
-      (env/bind-at 'behavior (behavior-operator) 0)
-      (env/bind-at 'behavior-cell (behavior-cell-operator) 0)
-      (env/bind-at 'be:behavior (behavior-operator) 0)
-      (env/bind-at 'be:behavior-cell (behavior-cell-operator) 0)
-      (env/bind-at 'latest (latest-operator) 0)
-      (env/bind-at 'last (last-operator) 0)
-      (env/bind-at 'history (history-operator) 0)
-      (env/bind-at 'be:latest (latest-operator) 0)
-      (env/bind-at 'be:last (last-operator) 0)
-      (env/bind-at 'be:history (history-operator) 0)
-      (env/bind-at 'history-take (history-take-operator) 0)
-      (env/bind-at 'history-drop (history-drop-operator) 0)
-      (env/bind-at 'history-split-at (history-split-at-operator) 0)))
+(defn add-behavior-construction-bindings
+  [bindings]
+  (into (vec bindings)
+        [['behavior-point (behavior-point-operator)]
+         ['behavior-event (behavior-event-operator)]
+         ['behavior-empty-state (behavior-empty-state-operator)]
+         ['behavior-add-event (behavior-add-event-operator)]
+         ['behavior-state-events (behavior-state-events-operator)]
+         ['behavior-update-tick (behavior-update-field-operator :tick "behavior-update-tick")]
+         ['behavior-update-value (behavior-update-field-operator :value "behavior-update-value")]
+         ['behavior-assoc-event (behavior-assoc-event-operator)]
+         ['behavior-state-from-events (behavior-state-from-events-operator)]
+         ['behavior-retain-last (behavior-retain-last-operator)]
+         ['behavior (behavior-operator)]
+         ['behavior-cell (behavior-cell-operator)]
+         ['be:behavior (behavior-operator)]
+         ['be:behavior-cell (behavior-cell-operator)]
+         ['latest (latest-operator)]
+         ['last (last-operator)]
+         ['history (history-operator)]
+         ['be:latest (latest-operator)]
+         ['be:last (last-operator)]
+         ['be:history (history-operator)]
+         ['history-take (history-take-operator)]
+         ['history-drop (history-drop-operator)]
+         ['history-split-at (history-split-at-operator)]]))
 
-(defn bind-behavior-operators
-  [compiler-env]
-  (-> compiler-env
-      (env/bind-at 'be:+ (stable-distributed-behavior-operator :+ core/+) 0)
-      (env/bind-at 'be:- (stable-distributed-behavior-operator :- core/-) 0)
-      (env/bind-at 'be:* (stable-distributed-behavior-operator :* core/*) 0)
-      (env/bind-at 'be:divide
-                   (stable-distributed-behavior-operator :/ core//)
-                   0)
-      bind-behavior-construction-operators))
+(defn add-behavior-bindings
+  [bindings]
+  (add-behavior-construction-bindings
+   (into (vec bindings)
+         [['be:+ (stable-distributed-behavior-operator :+ core/+)]
+          ['be:- (stable-distributed-behavior-operator :- core/-)]
+          ['be:* (stable-distributed-behavior-operator :* core/*)]
+          ['be:divide (stable-distributed-behavior-operator :/ core//)]])))
 
-(defn behavior-tms-env []
-  (-> (h/default-env)
-      bind-behavior-operators
-      compiler-tms/bind-distributed-tms-operators
-      (env/bind-at '<-> (h/bi-sync-operator) 0)))
-
+(defn behavior-tms-bindings []
+  (-> (h/default-bindings)
+      add-behavior-bindings
+      compiler-tms/add-distributed-tms-bindings
+      (conj ['<-> (h/bi-sync-operator)])))
 

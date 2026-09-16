@@ -7,6 +7,7 @@
             [propagators.compiler.model.closure-value :as closure-value]
             [propagators.compiler.model.env :as env]
             [propagators.compiler.compiler.basis :as h]
+            [propagators.compiler.language.parser :as parser]
             [propagators.compiler.behavior.main :as behavior-compiler]
             [propagators.infra.core :as core]
             [propagators.infra.datastructures.behavior :as behavior]
@@ -21,11 +22,14 @@
   [compiled]
   (nb/run-propagators (:net compiled) (:props compiled)))
 
-(defn- behavior-net
-  []
+(def ^:private behavior-base-net
   (-> net/empty-net
       (compile/install-and-run (protocol/install-cell-protocol))
       (compile/install-and-run (protocol/install-behavior-protocol))))
+
+(defn- behavior-net
+  []
+  behavior-base-net)
 
 (defn- strongest
   [n id]
@@ -47,13 +51,28 @@
   (let [id (ids/new-node-id)]
     [id (nb/install-cell n id v (behavior/strongest-value v))]))
 
+(def ^:private behavior-arithmetic-bindings
+  (into (vec (h/default-bindings))
+        [['be:+ (h/behavior-operator :+ clj/+)]
+         ['be:- (h/behavior-operator :- clj/-)]
+         ['be:* (h/behavior-operator :* clj/*)]
+         ['be:divide (h/behavior-operator :/ clj//)]]))
+
 (defn- behavior-arithmetic-env
   []
-  (-> (h/default-env)
-      (env/bind-at 'be:+ (h/behavior-operator :+ clj/+) 0)
-      (env/bind-at 'be:- (h/behavior-operator :- clj/-) 0)
-      (env/bind-at 'be:* (h/behavior-operator :* clj/*) 0)
-      (env/bind-at 'be:divide (h/behavior-operator :/ clj//) 0)))
+  behavior-arithmetic-bindings)
+
+(def ^:private closure-history-bindings
+  (filterv (fn [[symbol _operator]]
+             (contains? '#{be:+ be:*} symbol))
+           behavior-arithmetic-bindings))
+
+(defn- closure-history-env
+  [bindings]
+  (into closure-history-bindings
+        (map (fn [[symbol id]]
+               [symbol (env/cell-binding id)]))
+        bindings))
 
 (defn- record-map
   [record]
@@ -80,30 +99,35 @@
 
 (defn- env-with
   [bindings]
-  (reduce
-   (fn [acc [sym id]]
-     (env/bind acc sym (env/cell-binding id) 0))
-   (behavior-arithmetic-env)
-   bindings))
+  (into (behavior-arithmetic-env)
+        (map (fn [[sym id]] [sym (env/cell-binding id)]))
+        bindings))
 
-(defn- closure-info-from-source
-  ([source]
-   (closure-info-from-source source (behavior-arithmetic-env)))
-  ([source env]
-   (closure-info-from-source source env {}))
-  ([source env opts]
-   (let [compiled (behavior-compiler/compile-source source env opts)
-         closure-summary (strongest (:net compiled) (:cell compiled))]
-     (behavior/base-value closure-summary))))
+(defn- live-root
+  [n bindings]
+  (env/declare-root n (ids/new-node-id) bindings))
 
-(defn- closure-behavior-from-source
-  ([source timestamp]
-   (closure-behavior-from-source source (behavior-arithmetic-env) timestamp))
-  ([source env timestamp]
-   (let [compiled (behavior-compiler/compile-source source
-                                                    env
-                                                    {:timestamp timestamp})]
-     (content (:net compiled) (:cell compiled)))))
+(defn- closure-info-fixture
+  ([n source]
+   (closure-info-fixture n source (behavior-arithmetic-env) {}))
+  ([n source env]
+   (closure-info-fixture n source env {}))
+  ([n source env opts]
+   (let [compiled (behavior-compiler/compile-source source env (assoc opts :net n))
+         installed (run-compiled compiled)
+         closure-summary (strongest installed (:cell compiled))]
+     {:net installed
+      :closure-info (behavior/base-value closure-summary)})))
+
+(defn- closure-behavior-fixture
+  [n environment-id source timestamp]
+  (let [compiled (behavior-compiler/compile-source
+                  source
+                  environment-id
+                  {:net n :timestamp timestamp})
+        installed (run-compiled compiled)]
+    {:net installed
+     :closure-behavior (content installed (:cell compiled))}))
 
 (defn- closure-view
   [tick source-keys closure-info]
@@ -111,6 +135,14 @@
                            tick
                            closure-info
                            source-keys))
+
+(defn- closure-info
+  [environment-id body-source]
+  (closure-value/closure-object environment-id
+                                (parser/parse-string body-source)
+                                ['x]
+                                nil
+                                environment-id))
 
 (defn- seed-behavior-message
   [n id v]
@@ -202,25 +234,28 @@
 
 (deftest behavior-compiler-closure-update-replaces-latest-output
   (testing "updating a closure cell changes later/refired application output"
-    (let [inc-info (closure-info-from-source "(:: [x] (be:+ x 1))")
-          double-info (closure-info-from-source "(:: [x] (be:* x 2))")
+    (let [input (behavior-view [(hist/point-record 6 10)] #{[:a 6]})
+          f-id (ids/new-node-id)
+          [a-id n0] (behavior-cell (nb/install-cell (behavior-net) f-id) input)
+          root (live-root n0 (env-with {'f f-id 'a a-id}))
+          rooted (nb/run-propagators (:net root) (:props root))
+          inc-info (closure-info (:env root) "(be:+ x 1)")
+          double-info (closure-info (:env root) "(be:* x 2)")
           initial-closure (closure-view 0 #{0} inc-info)
           updated-closure (closure-view 1 #{1} double-info)
-          input (behavior-view [(hist/point-record 6 10)] #{[:a 6]})
-          [f-id n1] (behavior-cell (behavior-net) initial-closure)
-          [a-id n2] (behavior-cell n1 input)
+          [_tasks n3] (seed-behavior-message rooted f-id initial-closure)
           compiled (behavior-compiler/compile-source
                     "(f a)"
-                    (env-with {'f f-id 'a a-id})
-                    {:net n2})
-          n3 (run-compiled compiled)
-          [_tasks n4] (seed-behavior-message n3 f-id updated-closure)
-          result-net (nb/run-propagators n4
-                                         (nb/neighbor-propagator-ids n4 f-id))
+                    (:env root)
+                    {:net n3})
+          n4 (run-compiled compiled)
+          [_tasks n5] (seed-behavior-message n4 f-id updated-closure)
+          result-net (nb/run-propagators n5
+                                         (nb/neighbor-propagator-ids n5 f-id))
           closure-content (content result-net f-id)]
-      (is (= 11 (current-value n3 (:cell compiled))))
+      (is (= 11 (current-value n4 (:cell compiled))))
       (is (= [{:at 6 :value 11}]
-             (records (content n3 (:cell compiled)))))
+             (records (content n4 (:cell compiled)))))
       (is (= 20 (current-value result-net (:cell compiled))))
       (is (= [{:at 6 :value 20}]
              (records (content result-net (:cell compiled)))))
@@ -229,15 +264,19 @@
 
 (deftest behavior-compiler-same-closure-update-increases-closure-history
   (testing "the same latest closure can add retained history without changing the result"
-    (let [inc-info (closure-info-from-source "(:: [x] (be:+ x 1))")
+    (let [input (behavior-view [(hist/point-record 6 10)] #{[:a 6]})
+          f-id (ids/new-node-id)
+          [a-id n0] (behavior-cell (nb/install-cell (behavior-net) f-id) input)
+          root (live-root n0 (env-with {'f f-id 'a a-id}))
+          rooted (nb/run-propagators (:net root) (:props root))
+          {n1 :net inc-info :closure-info}
+          (closure-info-fixture rooted "(:: [x] (be:+ x 1))" (:env root))
           initial-closure (closure-view 0 #{0} inc-info)
           repeated-closure (closure-view 1 #{1} inc-info)
-          input (behavior-view [(hist/point-record 6 10)] #{[:a 6]})
-          [f-id n1] (behavior-cell (behavior-net) initial-closure)
-          [a-id n2] (behavior-cell n1 input)
+          [_tasks n2] (seed-behavior-message n1 f-id initial-closure)
           compiled (behavior-compiler/compile-source
                     "(f a)"
-                    (env-with {'f f-id 'a a-id})
+                    (:env root)
                     {:net n2})
           n3 (run-compiled compiled)
           [_tasks n4] (seed-behavior-message n3 f-id repeated-closure)
@@ -260,27 +299,51 @@
           [small-id n2] (behavior-cell n1 y-small)
           [large-id n3] (behavior-cell n2 y-large)
           [caller-y-id n4] (behavior-cell n3 y-caller)
-          small-info (closure-info-from-source
-                      "(:: [x] (be:+ x y))"
-                      (env-with {'y small-id}))
-          large-info (closure-info-from-source
-                      "(:: [x] (be:+ x y))"
-                      (env-with {'y large-id}))
+          base (live-root n4 (behavior-arithmetic-env))
+          base-net (nb/run-propagators (:net base) (:props base))
+          small-env-id (ids/new-node-id)
+          small-env (env/declare-child
+                     base-net (:env base) small-env-id
+                     [['y (env/cell-binding small-id)]])
+          small-net (nb/run-propagators (:net small-env) (:props small-env))
+          {n5 :net small-info :closure-info}
+          (closure-info-fixture
+           small-net
+           "(:: [x] (be:+ x y))"
+           small-env-id)
+          large-env-id (ids/new-node-id)
+          large-env (env/declare-child
+                     n5 (:env base) large-env-id
+                     [['y (env/cell-binding large-id)]])
+          large-net (nb/run-propagators (:net large-env) (:props large-env))
+          {n6 :net large-info :closure-info}
+          (closure-info-fixture
+           large-net
+           "(:: [x] (be:+ x y))"
+           large-env-id)
           initial-closure (closure-view 0 #{0} small-info)
           updated-closure (closure-view 1 #{1} large-info)
-          [f-id n5] (behavior-cell n4 initial-closure)
+          f-id (ids/new-node-id)
+          caller-env-id (ids/new-node-id)
+          caller-env (env/declare-child
+                      (nb/install-cell n6 f-id)
+                      (:env base)
+                      caller-env-id
+                      [['f (env/cell-binding f-id)]
+                       ['x (env/cell-binding x-id)]
+                       ['y (env/cell-binding caller-y-id)]])
+          caller-net (nb/run-propagators (:net caller-env) (:props caller-env))
+          [_tasks n7] (seed-behavior-message caller-net f-id initial-closure)
           compiled (behavior-compiler/compile-source
                     "(f x)"
-                    (env-with {'f f-id
-                               'x x-id
-                               'y caller-y-id})
-                    {:net n5})
-          n6 (run-compiled compiled)
-          [_tasks n7] (seed-behavior-message n6 f-id updated-closure)
-          result-net (nb/run-propagators n7
-                                         (nb/neighbor-propagator-ids n7 f-id))
+                    caller-env-id
+                    {:net n7})
+          n8 (run-compiled compiled)
+          [_tasks n9] (seed-behavior-message n8 f-id updated-closure)
+          result-net (nb/run-propagators n9
+                                         (nb/neighbor-propagator-ids n9 f-id))
           closure-content (content result-net f-id)]
-      (is (= 11 (current-value n6 (:cell compiled))))
+      (is (= 11 (current-value n8 (:cell compiled))))
       (is (= 110 (current-value result-net (:cell compiled))))
       (is (= 2 (count (behavior/history-records closure-content)))))))
 
@@ -290,19 +353,23 @@
           f-id (ids/new-node-id)
           [a-id n1] (behavior-cell (nb/install-cell (behavior-net) f-id)
                                    input)
+          root (live-root n1 (closure-history-env {'f f-id 'a a-id}))
+          rooted (nb/run-propagators (:net root) (:props root))
+          inc-info (closure-info (:env root) "(be:+ x 1)")
+          double-info (closure-info (:env root) "(be:* x 2)")
+          inc-closure (closure-view 0 #{0} inc-info)
+          double-closure (closure-view 1 #{1} double-info)
           compiled (behavior-compiler/compile-source
                     "(f a)"
-                    (env-with {'f f-id 'a a-id})
-                    {:net n1})
+                    (:env root)
+                    {:net rooted})
           empty-result (run-compiled compiled)
-          inc-closure (closure-behavior-from-source "(:: [x] (be:+ x 1))" 0)
-          double-closure (closure-behavior-from-source "(:: [x] (be:* x 2))" 1)
-          [inc-tasks n2] (seed-behavior-message empty-result f-id inc-closure)
-          inc-result (core/run-tasks inc-tasks n2)
-          [double-tasks n3] (seed-behavior-message inc-result
+          [inc-tasks n4] (seed-behavior-message empty-result f-id inc-closure)
+          inc-result (core/run-tasks inc-tasks n4)
+          [double-tasks n5] (seed-behavior-message inc-result
                                                    f-id
                                                    double-closure)
-          double-result (core/run-tasks double-tasks n3)
+          double-result (core/run-tasks double-tasks n5)
           closure-content (content double-result f-id)]
       (is (= value/nothing (strongest empty-result (:cell compiled))))
       (is (= 11 (current-value inc-result (:cell compiled))))
@@ -322,19 +389,19 @@
           f-id (ids/new-node-id)
           [a-id n1] (behavior-cell (nb/install-cell (behavior-net) f-id)
                                    input)
+          root (live-root n1 (closure-history-env {'f f-id 'a a-id}))
+          rooted (nb/run-propagators (:net root) (:props root))
+          inc-info (closure-info (:env root) "(be:+ x 1)")
+          double-info (closure-info (:env root) "(be:* x 2)")
+          inc-closure (closure-view 0 #{0} inc-info)
+          double-closure (closure-view 1 #{1} double-info)
+          [_inc-tasks n2] (seed-behavior-message rooted f-id inc-closure)
+          [_double-tasks n3] (seed-behavior-message n2 f-id double-closure)
           compiled (behavior-compiler/compile-source
                     "(f a)"
-                    (env-with {'f f-id 'a a-id})
-                    {:net n1})
-          empty-result (run-compiled compiled)
-          inc-closure (closure-behavior-from-source "(:: [x] (be:+ x 1))" 0)
-          double-closure (closure-behavior-from-source "(:: [x] (be:* x 2))" 1)
-          [inc-tasks n2] (seed-behavior-message empty-result f-id inc-closure)
-          inc-result (core/run-tasks inc-tasks n2)
-          [double-tasks n3] (seed-behavior-message inc-result
-                                                   f-id
-                                                   double-closure)
-          result-net (core/run-tasks double-tasks n3)]
+                    (:env root)
+                    {:net n3})
+          result-net (run-compiled compiled)]
       (is (= [{:at 0 :value 11}
               {:at 1 :value 40}]
              (records (content result-net (:cell compiled))))))))
@@ -345,17 +412,21 @@
           f-id (ids/new-node-id)
           [a-id n1] (behavior-cell (nb/install-cell (behavior-net) f-id)
                                    input)
+          root (live-root n1 (env-with {'f f-id 'a a-id}))
+          rooted (nb/run-propagators (:net root) (:props root))
+          {n2 :net v1-closure :closure-behavior}
+          (closure-behavior-fixture rooted (:env root) "(:: [x] 1)" 0)
+          {n3 :net v2-closure :closure-behavior}
+          (closure-behavior-fixture n2 (:env root) "(:: [x] 2)" 1)
           compiled (behavior-compiler/compile-source
                     "(f a)"
-                    (env-with {'f f-id 'a a-id})
-                    {:net n1})
+                    (:env root)
+                    {:net n3})
           empty-result (run-compiled compiled)
-          v1-closure (closure-behavior-from-source "(:: [x] 1)" 0)
-          v2-closure (closure-behavior-from-source "(:: [x] 2)" 1)
-          [v1-tasks n2] (seed-behavior-message empty-result f-id v1-closure)
-          v1-result (core/run-tasks v1-tasks n2)
-          [v2-tasks n3] (seed-behavior-message v1-result f-id v2-closure)
-          v2-result (core/run-tasks v2-tasks n3)
+          [v1-tasks n4] (seed-behavior-message empty-result f-id v1-closure)
+          v1-result (core/run-tasks v1-tasks n4)
+          [v2-tasks n5] (seed-behavior-message v1-result f-id v2-closure)
+          v2-result (core/run-tasks v2-tasks n5)
           closure-content (content v2-result f-id)]
       (is (= value/nothing (strongest empty-result (:cell compiled))))
       (is (= 1 (current-value v1-result (:cell compiled))))

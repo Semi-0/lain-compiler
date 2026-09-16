@@ -32,11 +32,17 @@
   [graph]
   (set (keep :call/status (vals (:values graph)))))
 
+(defn- default-operator
+  [sym]
+  (some (fn [[name operator]]
+          (when (= name sym) operator))
+        (helpers/default-bindings)))
+
 (deftest call-graph-is-a-primitive-and-a-named-propagator
   (is (operator-value/operator-closure?
-       (env/lookup (helpers/default-env) 'call-graph)))
+       (default-operator 'call-graph)))
   (is (operator-value/operator-closure?
-       (env/lookup (helpers/default-env) 'p:call-graph)))
+       (default-operator 'p:call-graph)))
   (let [compiled (compiler/compile-source
                   "(call-graph (:: [x] (+ x 1)))")
         network (run-compiled compiled)

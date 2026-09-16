@@ -116,12 +116,6 @@
 
 (def list-empty-marker :compiler-2/list-empty)
 
-(defn- compile-direct-form
-  [state form role]
-  (let [compile* (compiler-dispatch/state-compiler state)
-        [state' binding] (compile* (child state role) form)]
-    [(assoc state' :path (:path state)) binding]))
-
 (defn declare-list
   [state element-bindings out-id]
   (let [element-ids (mapv env/binding-id element-bindings)]
@@ -177,7 +171,7 @@
    out-id
    #(list-topology % element-ids out-id)))
 
-(defn- compile-list-k
+(defn list-compiler-operands
   [compile-k state operand-forms out-id k]
   (let [base-path (:path state)
         forms (vec operand-forms)]
@@ -202,19 +196,7 @@
     :compiler-activate
     (fn [_compile* network _context-id arg-ids out-id]
       (list-application-effects network arg-ids out-id))
-    :direct-compiler compile-list-k
-    :direct-installer
-    (fn [state operand-forms out-id]
-      (let [[state' element-bindings]
-            (reduce
-             (fn [[state acc] [idx form]]
-               (let [[state' binding] (compile-direct-form state
-                                                           form
-                                                           [:list-element idx])]
-                 [state' (conj acc binding)]))
-             [state []]
-             (map-indexed vector operand-forms))]
-        (declare-list state' element-bindings out-id)))}))
+    :compiler-operands list-compiler-operands}))
 
 (defn- concrete-copy-activation
   [[source-id] [target-id] network]
@@ -824,70 +806,64 @@
     :activate (fn [current-net inputs _outputs _context-id]
                 (chain-sync-messages current-net inputs))}))
 
-(defn- bind-default-tms-operators
-  [compiler-env]
+(defn- add-default-tms-bindings
+  [bindings]
   ((requiring-resolve
-    'propagators.compiler.operators.tms/bind-distributed-tms-operators)
-   compiler-env))
+    'propagators.compiler.operators.tms/add-distributed-tms-bindings)
+   bindings))
 
-(defn- operator-env
+(defn- operator-bindings
   [operator-builder]
-  (bind-default-tms-operators
-   (-> (obj/empty-compound-object)
-       (env/set-depth 0)
-       (env/bind-at '+ (operator-builder core/+) 0)
-       (env/bind-at '- (operator-builder core/-) 0)
-       (env/bind-at '* (operator-builder core/*) 0)
-       (env/bind-at '/ (operator-builder core//) 0)
-       (env/bind-at '< (operator-builder core/<) 0)
-       (env/bind-at '<= (operator-builder core/<=) 0)
-       (env/bind-at '> (operator-builder core/>) 0)
-       (env/bind-at '>= (operator-builder core/>=) 0)
-       (env/bind-at '= (operator-builder core/=) 0)
-       (env/bind-at 'not (operator-builder core/not) 0)
-       (env/bind-at 'str (operator-builder core/str) 0)
-       (env/bind-at 'switch (switch-operator) 0)
-       (env/bind-at 'if (if-operator) 0)
-       (env/bind-at 'branch (branch-operator) 0)
-       (env/bind-at 'nothing? (predicate-operator 'nothing? :nothing) 0)
-       (env/bind-at 'contradiction? (predicate-operator 'contradiction? :contradiction) 0)
-       (env/bind-at 'value? (predicate-operator 'value? :value) 0)
-       (env/bind-at 'symbol? (predicate-operator 'symbol? :symbol) 0)
-       (env/bind-at 'string? (predicate-operator 'string? :string) 0)
-       (env/bind-at 'number? (predicate-operator 'number? :number) 0)
-       (env/bind-at 'boolean? (predicate-operator 'boolean? :boolean) 0)
-       (env/bind-at 'cell? (predicate-operator 'cell? :cell) 0)
-       (env/bind-at 'network? (predicate-operator 'network? :network) 0)
-       (env/bind-at 'closure? (predicate-operator 'closure? :closure) 0)
-       (env/bind-at 'behavior? (predicate-operator 'behavior? :behavior) 0)
-       (env/bind-at 'tms? (predicate-operator 'tms? :tms) 0)
-       (env/bind-at 'p:cons (cons-operator) 0)
-       (env/bind-at 'list (list-operator) 0)
-       (env/bind-at 'p:slot (slot-operator) 0)
-       (env/bind-at 'p:car (accessor-operator :car obj/p:car "p:car") 0)
-       (env/bind-at 'p:cdr (accessor-operator :cdr obj/p:cdr "p:cdr") 0)
-       (env/bind-at 'cons (cons-operator) 0)
-       (env/bind-at 'car (accessor-operator :car obj/p:car "car") 0)
-       (env/bind-at 'cdr (accessor-operator :cdr obj/p:cdr "cdr") 0)
-       (env/bind-at 'call-graph (call-graph/call-graph-operator) 0)
-       (env/bind-at 'p:call-graph (call-graph/call-graph-operator) 0)
-       (env/bind-at 'execute-sub-env (execute-sub-env-operator) 0)
-       (env/bind-at '-> (sync-operator) 0)
-       (env/bind-at '<-> (bi-sync-operator) 0))))
+  (add-default-tms-bindings
+   [['+ (operator-builder core/+)]
+    ['- (operator-builder core/-)]
+    ['* (operator-builder core/*)]
+    ['/ (operator-builder core//)]
+    ['< (operator-builder core/<)]
+    ['<= (operator-builder core/<=)]
+    ['> (operator-builder core/>)]
+    ['>= (operator-builder core/>=)]
+    ['= (operator-builder core/=)]
+    ['not (operator-builder core/not)]
+    ['str (operator-builder core/str)]
+    ['switch (switch-operator)]
+    ['if (if-operator)]
+    ['branch (branch-operator)]
+    ['nothing? (predicate-operator 'nothing? :nothing)]
+    ['contradiction? (predicate-operator 'contradiction? :contradiction)]
+    ['value? (predicate-operator 'value? :value)]
+    ['symbol? (predicate-operator 'symbol? :symbol)]
+    ['string? (predicate-operator 'string? :string)]
+    ['number? (predicate-operator 'number? :number)]
+    ['boolean? (predicate-operator 'boolean? :boolean)]
+    ['cell? (predicate-operator 'cell? :cell)]
+    ['network? (predicate-operator 'network? :network)]
+    ['closure? (predicate-operator 'closure? :closure)]
+    ['behavior? (predicate-operator 'behavior? :behavior)]
+    ['tms? (predicate-operator 'tms? :tms)]
+    ['p:cons (cons-operator)]
+    ['list (list-operator)]
+    ['p:slot (slot-operator)]
+    ['p:car (accessor-operator :car obj/p:car "p:car")]
+    ['p:cdr (accessor-operator :cdr obj/p:cdr "p:cdr")]
+    ['cons (cons-operator)]
+    ['car (accessor-operator :car obj/p:car "car")]
+    ['cdr (accessor-operator :cdr obj/p:cdr "cdr")]
+    ['call-graph (call-graph/call-graph-operator)]
+    ['p:call-graph (call-graph/call-graph-operator)]
+    ['execute-sub-env (execute-sub-env-operator)]
+    ['-> (sync-operator)]
+    ['<-> (bi-sync-operator)]]))
 
-(defn default-env []
-  (operator-env primitive-operator))
+(defn default-bindings []
+  (operator-bindings primitive-operator))
 
-(defn dependency-env []
-  (operator-env contextual-primitive-operator))
+(defn dependency-bindings []
+  (operator-bindings contextual-primitive-operator))
 
-(defn behavior-env []
-  (default-env))
+(defn behavior-bindings []
+  (default-bindings))
 
-(defn behavior-tms-env []
+(defn behavior-tms-bindings []
   ((requiring-resolve
-    'propagators.compiler.operators.behavior/behavior-tms-env)))
-
-(defn legacy-central-tms-env []
-  ((requiring-resolve
-    'propagators.compiler.legacy/legacy-central-tms-env)))
+    'propagators.compiler.operators.behavior/behavior-tms-bindings)))

@@ -7,7 +7,6 @@
             [propagators.compiler.model.env :as env]
             [propagators.compiler.compiler.basis :as h]
             [propagators.compiler.model.operator-value :as operator-value]
-            [propagators.compiler.predicate-core :as predicate-core]
             [propagators.compiler.common.cps :as cps]
             [propagators.infra.datastructures.compound-object :as obj]
             [propagators.infra.datastructures.dependency :as dependency]
@@ -107,34 +106,25 @@
     (is (= 'y (ast/name (last (ast/body (ast/body constraint-network))))))))
 
 (deftest cps-default-preserves-synchronous-result-semantics
-  (let [compiler-env (h/default-env)]
-    (doseq [source ["1"
-                    "(+ 1 2)"
-                    "(let [x 1] (+ x 2))"]]
-      (testing source
-        (let [seed [:cps-parity source]
-              expected (predicate-core/compile-source source compiler-env
-                                                      {:seed seed})
-              actual (compiler/compile-source source compiler-env {:seed seed})
-              expected-net (run-compiled expected)
-              actual-net (run-compiled actual)]
-          (is (= (semantic-value expected-net (:cell expected))
-                 (semantic-value actual-net (:cell actual)))))))))
+  (doseq [[source expected] [["1" 1]
+                             ["(+ 1 2)" 3]
+                             ["(let [x 1] (+ x 2))" 3]]]
+    (testing source
+      (let [actual (compiler/compile-source source)
+            actual-net (run-compiled actual)]
+        (is (= expected (semantic-value actual-net (:cell actual))))))))
 
 (deftest lexical-scope-construction-restores-and-reuses-frames
   (let [root-id (ids/new-node-id)
-        [network _] (env/import-environment net/empty-net root-id
-                                            (h/default-env))
+        declared (env/declare-root net/empty-net root-id
+                                   (h/default-bindings))
         compiled (compiler/compile-expr
                   (ast/let-cell ['x] (ast/sym 'x))
                   root-id
-                  {:net network :seed :restore-let-env})]
-    (is (= root-id (:env compiled))))
-  (let [env-id (ids/new-node-id)
-        network (nb/ensure-cell net/empty-net env-id)
-        [props installed] ((env/p:sub-env env-id env-id) network)]
-    (is (empty? props))
-    (is (= network installed))))
+                  {:net (:net declared)
+                   :environment-props (:props declared)
+                   :seed :restore-let-env})]
+    (is (= root-id (:env compiled)))))
 
 (deftest cps-compilation-is-stack-safe
   (testing "one thousand nested lexical scopes"
@@ -142,15 +132,15 @@
                          (ast/let-cell [(symbol (str "x" idx))] body))
                        (ast/lit 1)
                        (range 1000))
-          compiled (compiler/compile-expr expr (h/default-env)
-                                          {:seed :deep-let})]
+          compiled (compiler/compile-expr-with-bindings
+                    expr (h/default-bindings) {:seed :deep-let})]
       (is (= 1 (net/network-cell-strongest (:net compiled) (:cell compiled))))))
   (testing "one thousand nested sequences"
     (let [expr (reduce (fn [body _] (ast/sequence* body))
                        (ast/lit 2)
                        (range 1000))
-          compiled (compiler/compile-expr expr (h/default-env)
-                                          {:seed :deep-sequence})]
+          compiled (compiler/compile-expr-with-bindings
+                    expr (h/default-bindings) {:seed :deep-sequence})]
       (is (= 2 (net/network-cell-strongest (:net compiled)
                                            (:cell compiled))))))
   (testing "nested ordinary and built-in direct applications"
@@ -163,38 +153,39 @@
                          (ast/lit 0)
                          (range 250))
           compiled-ordinary
-          (compiler/compile-expr ordinary (h/default-env)
-                                 {:seed :deep-application})
+          (compiler/compile-expr-with-bindings
+           ordinary (h/default-bindings) {:seed :deep-application})
           application-topologies
           (application/application-topologies (:net compiled-ordinary))]
       (is (= 250 (count application-topologies)))
-      (is (some? (:cell (compiler/compile-expr direct (h/default-env)
-                                               {:seed :deep-list})))))))
+      (is (some? (:cell (compiler/compile-expr-with-bindings
+                         direct (h/default-bindings)
+                         {:seed :deep-list})))))))
 
 (deftest local-cps-compiler-survives-delayed-and-direct-work
   (let [calls (atom 0)
         compile* (compiler-with-custom calls)]
     (testing "closure activation"
-      (let [compiled (compiler/compile-expr
+      (let [compiled (compiler/compile-expr-with-bindings
                       (ast/app (ast/network [] (custom-expr 41)))
-                      (h/default-env)
+                      (h/default-bindings)
                       {:compiler compile*})
             result (run-compiled compiled)]
         (is (= 41 (net/network-cell-strongest result (:cell compiled))))))
     (testing "lazy activation"
       (let [before @calls
-            compiled (compiler/compile-expr
+            compiled (compiler/compile-expr-with-bindings
                       (ast/when-topology (ast/lit true) (custom-expr 7))
-                      (h/default-env)
+                      (h/default-bindings)
                       {:compiler compile*})]
         (is (= before @calls))
         (run-compiled compiled)
         (is (= (inc before) @calls))))
     (testing "list direct compiler"
       (let [before @calls]
-        (compiler/compile-expr
+        (compiler/compile-expr-with-bindings
          (ast/app (ast/sym 'list) (custom-expr 3))
-         (h/default-env)
+         (h/default-bindings)
          {:compiler compile*})
         (is (= (inc before) @calls))))
     (testing "sub-environment execution"
@@ -203,51 +194,38 @@
             expr-id (ids/new-node-id)
             child-id (ids/new-node-id)
             out-id (ids/new-node-id)
-            network (-> net/empty-net
-                        (nb/install-cell parent-id)
+            declared (env/declare-root net/empty-net parent-id
+                                       (h/default-bindings))
+            network (-> (:net declared)
                         (nb/install-cell expr-id)
                         (nb/install-cell child-id)
                         (nb/install-cell out-id)
-                        (nb/seed-cell parent-id (h/default-env))
                         (nb/seed-cell expr-id (custom-expr 17)))
+            rooted (nb/run-propagators network (:props declared))
             [prop-id installed]
             ((application/p:execute-sub-env-with
               compile* parent-id expr-id [] child-id out-id)
-             network)
+             rooted)
             result (nb/run-propagators installed [prop-id])]
         (is (= (inc before) @calls))
         (is (= 17 (net/network-cell-strongest result out-id)))))))
 
-(deftest direct-compiler-is-additive-over-legacy-installer
-  (let [legacy-calls (atom 0)
-        cps-calls (atom 0)
-        legacy (operator-value/operator-closure
-                {:name 'legacy
-                 :direct-installer
-                 (fn [state _forms out-id]
-                   (swap! legacy-calls inc)
-                   [state (env/cell-binding out-id)])})
-        preferred (operator-value/operator-closure
-                   {:name 'preferred
-                    :direct-installer
-                    (fn [state _forms out-id]
-                      (swap! legacy-calls inc)
-                      [state (env/cell-binding out-id)])
-                    :direct-compiler
-                    (fn [_compile-k state _forms out-id k]
-                      (swap! cps-calls inc)
-                      (cps/continue k state (env/cell-binding out-id)))})
+(deftest compiler-operands-handles-syntax-application
+  (let [calls (atom 0)
+        operator (operator-value/operator-closure
+                  {:name 'compiler-operands
+                   :compiler-operands
+                   (fn [_compile-k state _forms out-id k]
+                     (swap! calls inc)
+                     (cps/continue k state (env/cell-binding out-id)))})
         compile* (cps/make-compiler
                   (cps/compose-rules
                    (cps/on #(= :direct-operator-test (ast/type %))
                            (fn [_compile-k state expr k]
                              (cps/continue k state (ast/value expr))))
                    compiler/compiler-dispatch))]
-    (compiler/compile-expr (ast/app (direct-operator-expr legacy))
-                           (h/default-env)
-                           {:compiler compile*})
-    (compiler/compile-expr (ast/app (direct-operator-expr preferred))
-                           (h/default-env)
-                           {:compiler compile*})
-    (is (= 1 @legacy-calls))
-    (is (= 1 @cps-calls))))
+    (is (fn? (operator-value/operator-compiler-operands operator)))
+    (compiler/compile-expr-with-bindings
+     (ast/app (direct-operator-expr operator))
+     (h/default-bindings) {:compiler compile*})
+    (is (= 1 @calls))))
